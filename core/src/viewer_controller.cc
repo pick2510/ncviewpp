@@ -784,6 +784,15 @@ ViewerController::reportPosition( int x, int y, unsigned int button_mask )
 	if( view->variable->effective_dimensionality == 1 )
 		return;
 
+	/* Phase 13b: the check above is upstream's proxy for "set_scan_variable()
+	 * took its plot-and-return path, so there is no allocated 2-D field".
+	 * has2dImage() is the condition the code below actually needs, and
+	 * additionally covers the "couldn't determine the axes" degrade paths,
+	 * where effective_dimensionality can be 3 while both display axis ids
+	 * are -1. */
+	if( ! view->has2dImage() )
+		return;
+
 	if( view->data_status == ViewDataStatus::Invalid ) {
 		view->fillViewData();
 		view->data_status = ViewDataStatus::Valid;
@@ -870,6 +879,13 @@ ViewerController::setMinFromCurdata()
 	if( view == NULL )
 		return;
 
+	/* Phase 13b: the Ctrl-click twin of plotXY()'s guard. Indexes size[]
+	 * by both display axes and samples view->data, neither of which
+	 * exists while a 1-D variable is selected -- and fillViewData() just
+	 * below would itself write through size[y_axis_id] first. */
+	if( ! view->has2dImage() )
+		return;
+
 	if( view->data_status == ViewDataStatus::Invalid ) {
 		view->fillViewData();
 		view->data_status = ViewDataStatus::Valid;
@@ -916,6 +932,13 @@ ViewerController::setMaxFromCurdata()
 	// See plotXY()'s comment: ImageView accepts Ctrl-click before any
 	// variable is selected, unlike upstream's canvas widget.
 	if( view == NULL )
+		return;
+
+	/* Phase 13b: the Ctrl-click twin of plotXY()'s guard. Indexes size[]
+	 * by both display axes and samples view->data, neither of which
+	 * exists while a 1-D variable is selected -- and fillViewData() just
+	 * below would itself write through size[y_axis_id] first. */
+	if( ! view->has2dImage() )
 		return;
 
 	if( view->data_status == ViewDataStatus::Invalid ) {
@@ -972,6 +995,18 @@ ViewerController::plotXY()
 	// function with view == NULL and crashed (segfault dereferencing
 	// view->plot_XY_axis) instead of upstream's implicit no-op.
 	if( view == NULL )
+		return;
+
+	/* Phase 13b: reached from a plain left click on the 2-D pane
+	 * (ui/src/main_window.cc). reportPosition() below already refuses the
+	 * same situation for a mouse *hover*, with a comment naming it
+	 * exactly -- "click on a 2-d variable, then click on a 1-d variable,
+	 * then move the pointer back over the displayed colormap of the (old)
+	 * 2-d variable" -- but the click path was never given the same guard,
+	 * and start[view->y_axis_id] = data_y below is then an out-of-bounds
+	 * heap WRITE, not just a bad read. Silent: a click on a pane that
+	 * shows a stale picture is not an error the user needs told about. */
+	if( ! view->has2dAxes() )
 		return;
 
 	X_axis = view->plot_XY_axis;

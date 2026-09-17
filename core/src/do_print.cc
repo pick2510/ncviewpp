@@ -113,6 +113,16 @@ do_print( void )
 	if( view == NULL )
 		return;
 
+	/* Phase 13b: Button::Print stays enabled while a 1-D variable is
+	 * selected, and the size[] reads just below (plus ~30 more in
+	 * build_print_info(), and the view->pixels the page is drawn from)
+	 * are out of bounds in that state. Same shape as the null-view guard
+	 * above -- a precondition on the session, not on the arguments. */
+	if( ! view->has2dImage() ) {
+		in_error( "There is no 2-D picture to print for this variable." );
+		return;
+		}
+
 	x_size = view->variable->size[view->x_axis_id];
 	y_size = view->variable->size[view->y_axis_id];
 	view_get_scaled_size( options.blowup, x_size, y_size, &scaled_x_size, &scaled_y_size );

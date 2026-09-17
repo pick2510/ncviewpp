@@ -502,6 +502,39 @@ struct View {
 	 * for 'var'. Caller owns the result. */
 	static View *create( NCVar *var );
 
+	/* True when this View has a real 2-D image to work on, i.e. both
+	 * display axes actually resolved to a dimension of the variable.
+	 *
+	 * False in two situations, both of which leave size[], dim[],
+	 * dim_map_info[] and var_place[] indexable only OUT OF BOUNDS -- these
+	 * are std::vectors, so [-1] is [SIZE_MAX], a silent heap read or write
+	 * eight bytes before the buffer:
+	 *   - a 1-D variable is selected. initialDetermineScanAxes()'s case 1
+	 *     sets y_axis_id = -1 by design, and set_scan_variable()'s
+	 *     plot-and-return path then skips allocStorage()/fillViewData()
+	 *     entirely, so `data` is empty too.
+	 *   - the axes could not be determined at all (the degrade paths
+	 *     Phase 12e added), which sets all three ids to -1.
+	 *
+	 * Phase 13b: every caller that indexes by x_axis_id/y_axis_id must
+	 * check this first. Upstream guarded exactly one of them
+	 * (ViewerController::reportPosition(), whose comment names the
+	 * scenario) and missed the other thirteen, which is the user-reported
+	 * "change from 1d to 3d back and forward multiple times and it can
+	 * crash". */
+	bool has2dAxes() const { return (x_axis_id >= 0) && (y_axis_id >= 0); }
+
+	/* has2dAxes() plus a data buffer actually sized for it. The two are
+	 * separate conditions, not one: set_scan_variable()'s 1-D path skips
+	 * allocStorage() altogether, and it is also skipped for a variable
+	 * whose effective_dimensionality is 1 but whose x/y axes did resolve
+	 * (e.g. a (time=1, lat=1, lon=50) field), so a valid-looking pair of
+	 * axis ids is not on its own evidence that `data` exists. Anything
+	 * that reads or writes data[]/pixels[] must check this one;
+	 * allocStorage() itself checks has2dAxes(), being what makes this
+	 * true. */
+	bool has2dImage() const { return has2dAxes() && !data.empty(); }
+
 	void determineScanAxes( NCVar *var, View *old_view );
 	void setScanPlace( NCVar *var, View *old_view );
 	void calculateBlowup( NCVar *var, int val_to_set_to );

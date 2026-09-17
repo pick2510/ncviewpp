@@ -68,6 +68,7 @@ add_executable(ncview_core_tests
     test_view_dims.cc
     test_view_check_new_data.cc
     test_view_xy_plot.cc
+    test_view_1d_guards.cc
     test_view_labels.cc
     test_multifile.cc
     test_do_print.cc

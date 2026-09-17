@@ -927,6 +927,15 @@ View::fillViewData()
 	if( v->data_status == ViewDataStatus::Valid )
 		return;
 
+	/* Phase 13b: count[] is indexed by the axis ids just below, and
+	 * getData() writes x_size*y_size floats into v->data -- both are heap
+	 * corruption if the axes are unresolved or allocStorage() never ran
+	 * for this View (see View::has2dImage()). Silent, because this is an
+	 * internal helper several UI paths funnel into; the entry points that
+	 * can be driven by a button report the error themselves. */
+	if( ! v->has2dImage() )
+		return;
+
 	std::vector<size_t> count( v->variable->n_dims );
 
 	/* By default, count of 1 for all uninteresting dimensions */
@@ -1000,6 +1009,15 @@ View::changeBlowup( int delta, int redraw_flag, int view_var_is_valid )
 	if( view_var_is_valid ) {
 		view->variable->user_set_blowup = options.blowup;
 		}
+
+	/* Phase 13b: the blowup itself (label included) has already been
+	 * applied above and is a global option, so it is kept; only the part
+	 * that resizes this View's pixel buffer from size[x/y_axis_id] is
+	 * skipped, those reads being out of bounds with an unresolved axis.
+	 * Silent: this is reachable from a scroll-wheel zoom, which fires
+	 * continuously. */
+	if( ! view->has2dAxes() )
+		return;
 
 	x_size       = view->variable->size[view->x_axis_id];
 	y_size       = view->variable->size[view->y_axis_id];
@@ -1103,6 +1121,17 @@ View::setScanDims()
 	int        new_x_id, new_y_id;
 	int        scan_dims_result;
 	Message    message;
+
+	/* Phase 13b: the two dim[] reads just below are out of bounds if
+	 * either display axis is unresolved -- reached by pressing "Axes"
+	 * while a 1-D variable is selected, which this port left possible
+	 * because the 2-D pane and its toolbar stayed live. Reported rather
+	 * than silent: the user pressed a button and gets nothing back
+	 * otherwise. */
+	if( ! view->has2dAxes() ) {
+		in_error( "This variable has no 2-D display axes to set." );
+		return;
+		}
 
 	v          = view->variable;
 	cur_x_name = const_cast<char *>(v->dim[view->x_axis_id]->name.c_str());
@@ -1287,6 +1316,14 @@ View::allocStorage()
 	 * modernization.md's Phase 6 notes for the record of this decision.
 	 */
 
+	/* Phase 13b: has2dAxes(), not has2dImage() -- this function is what
+	 * makes has2dImage() true, so it can only require the axes. With an
+	 * unresolved axis the size[] reads below are out of bounds and the
+	 * resize() that follows would size the buffers from whatever heap
+	 * bytes happened to precede the vector. */
+	if( ! view->has2dAxes() )
+		return;
+
 	if( view->data_status == ViewDataStatus::Edited )
 		view_data_edit_warn( g_app.session, *g_app.ui );
 	view->data_status = ViewDataStatus::Invalid;
@@ -1413,6 +1450,13 @@ View::initSaveframes()
 	char	err_message[132];
 
 	if( options.save_frames == false )
+		return;
+
+	/* Phase 13b: xsize/ysize below index size[] by the display axis ids;
+	 * with either unresolved the frame-store capacity is computed from
+	 * out-of-bounds heap bytes. There is no 2-D field to cache frames of
+	 * in that state anyway. */
+	if( ! view->has2dAxes() )
 		return;
 
 	if( view->scan_axis_id == -1 ) {
@@ -1787,6 +1831,13 @@ View::redrawDimensionInfo()
 	NCVar	*var;
 	char	*cur_y_name;
 
+	/* Phase 13b: var->dim[y_axis_id] below is a std::vector of
+	 * unique_ptr<NCDim>; with y_axis_id == -1 that reads a bogus pointer
+	 * out of bounds and dereferences it for ->name. There is no Y axis to
+	 * label in that state. */
+	if( ! view->has2dAxes() )
+		return;
+
 	var     = view->variable;
 	dimlist = var->files.front()->file->scannableDims( const_cast<char *>(var->name.c_str()) );
 
@@ -2043,6 +2094,13 @@ View::setDataeditPlace()
 	int	x, y;
 	size_t	index;
 
+	/* Phase 13b: reached from a middle-button press/drag on the 2-D pane
+	 * (ui/src/main_window.cc), which this port left clickable even while
+	 * a 1-D variable is selected. Indexes size[] by both display axes and
+	 * then reads view->data. Silent: mouse drags fire continuously. */
+	if( ! view->has2dImage() )
+		return;
+
 	if( view->data_status == ViewDataStatus::Invalid ) {
 		view->fillViewData();
 		view->data_status = ViewDataStatus::Valid;
@@ -2087,6 +2145,16 @@ View::dataEdit()
 	float	val;
 	char	buf[32];
 
+	/* Phase 13b: the "Edit" button stays enabled while a 1-D variable is
+	 * selected, and the size[] reads below are then out of bounds --
+	 * n_entries comes out of whatever heap bytes precede the vector, and
+	 * the loop reads view->data (empty on that path) that many times.
+	 * There is no 2-D grid of cells to edit. */
+	if( ! view->has2dImage() ) {
+		in_error( "There is no 2-D data field to edit for this variable." );
+		return;
+		}
+
 	x_size = view->variable->size[view->x_axis_id];
 	y_size = view->variable->size[view->y_axis_id];
 
@@ -2121,6 +2189,13 @@ View::changeDat( size_t index, float new_val )
 {
 	View *view = this;
 	size_t	x_size, y_size, scaled_x_size, scaled_y_size, x, y;
+
+	/* Phase 13b: same precondition as View::dataEdit(), which is the only
+	 * thing that can put a cell on screen for this to be called back
+	 * with. Silent: the grid should not exist at all in that state, so
+	 * there is nobody to report to. */
+	if( ! view->has2dImage() )
+		return;
 
 	view->data_status = ViewDataStatus::Edited;
 
@@ -2161,6 +2236,16 @@ View::dataEditDump()
 	Message	message;
 	size_t	x_size, y_size, start[2], count[2];
 	int	x_dimid, y_dimid, varid, err;
+
+	/* Phase 13b: indexes size[] and dim[] by both display axes, and writes
+	 * x_size*y_size floats out of view->data. Reached from
+	 * view_data_edit_warn(), i.e. from allocStorage() on the *next*
+	 * variable switch, so the View here is not necessarily the one the
+	 * edits were made on. */
+	if( ! view->has2dImage() ) {
+		in_error( "There is no 2-D data field to save for this variable." );
+		return;
+		}
 
 	if( view->data_status != ViewDataStatus::Edited ) {
 		fprintf( stderr, "Warning!  Data is NOT CHANGED!\n" );
@@ -2206,6 +2291,13 @@ view_data_edit_warn( ViewerSession &session, ViewerUi &ui )
 {
 	Message	message;
 	std::unique_ptr<ViewState> &view = session.activeView();
+
+	/* Phase 13b: the only caller (View::allocStorage()) runs with a View
+	 * in hand, so this is defence in depth rather than a reproduced
+	 * crash -- but it is the one path here that dereferences `view`
+	 * without asking, and a dialog sits between the check and the use. */
+	if( view == NULL )
+		return;
 
 	message = ui.in_dialog( "Warning!  Data edits will be lost unless you save them now.\nSave them now?", true );
 	if( message == Message::Cancel )
@@ -2629,6 +2721,16 @@ View::hasMissingData() const
 	float	dat;
 
 	if( v->variable == NULL )
+		return(true);
+
+	/* Phase 13b: the x_axis_id guard below was already right, but `data`
+	 * being *sized* is a separate precondition -- set_scan_variable()'s
+	 * 1-D path never calls allocStorage(), so a View can reach here with
+	 * a perfectly good x_axis_id and an empty buffer, and the read loop
+	 * then walks off the end of nothing (a real SIGSEGV, not a quiet
+	 * overread). "No data loaded" answers this question the same way
+	 * "no variable" does. */
+	if( v->data.empty() )
 		return(true);
 
 	if( v->x_axis_id < 0 )

@@ -116,6 +116,16 @@ View::dataToPixels()
 	if( ! v->variable->have_set_range )
 		return( -1 );
 
+	/* Phase 13b: last line of defence for the whole render path. The two
+	 * size[] reads below drive every buffer size in this function and in
+	 * expandData()/contractData(); with an unresolved axis they come out
+	 * of heap bytes preceding the vector, which means either a wild
+	 * allocation or a silent overwrite. Returning -1 is the established
+	 * "this View is not renderable" answer every caller already handles
+	 * (see the have_set_range check just above). */
+	if( ! v->has2dImage() )
+		return( -1 );
+
 	blowup   = options.blowup;	/* NOTE: can be negative if shrinking data! -N means size is 1/Nth */
 
 	x_size     = v->variable->size[v->x_axis_id];

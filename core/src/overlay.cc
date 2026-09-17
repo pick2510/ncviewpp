@@ -61,6 +61,17 @@ do_overlay( int n, char *custom_filename, int suppress_screen_changes )
 		return;
 		}
 
+	/* Phase 13b: an overlay is a mask laid over the 2-D image, and every
+	 * gen_overlay*() below indexes dim[]/size[]/dim_map_info[] by both
+	 * display axis ids. With a 1-D variable selected there is no image to
+	 * overlay and those reads are out of bounds. OVERLAY_NONE is still
+	 * allowed through -- turning an overlay *off* touches none of that
+	 * and is how the user gets back to a clean state. */
+	if( (n != OVERLAY_NONE) && ! view->has2dAxes() ) {
+		x_error( "This variable has no 2-D picture to put an overlay on" );
+		return;
+		}
+
 	/* Free space for previous overlay */
 	if( options.overlay->doit )
 		options.overlay->overlay.clear();
