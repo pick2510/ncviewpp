@@ -46,6 +46,11 @@ Message g_dialog_response = Message::OK;
 Message g_range_response = Message::OK;
 Message g_printer_options_response = Message::OK;
 int g_set_scan_dims_response = 0;
+// Phase 13a: when false, in_set_scan_dims() leaves *new_dim_list exactly as
+// the caller passed it, which is what MainWindow::scanDimsDialog() does on
+// its two early-out paths (Cancel, and an empty dim_list). Lets a test drive
+// a real cancel instead of the stub's default "accept unchanged" answer.
+bool g_set_scan_dims_populate = true;
 
 // Captured by in_print() below so Phase 4a's do_print.cc tests can assert
 // on what build_print_info() actually produced, rather than only that
@@ -127,6 +132,7 @@ void resetStubRecording()
 	g_range_response = Message::OK;
 	g_printer_options_response = Message::OK;
 	g_set_scan_dims_response = 0;
+	g_set_scan_dims_populate = true;
 	g_have_last_print_info = false;
 	g_last_print_info = PrintInfo();
 	g_last_print_options = PrintOptions();
@@ -215,19 +221,27 @@ public:
 	void in_set_cursor_busy() override { g_recorded_calls.push_back("in_set_cursor_busy"); }
 	void in_set_cursor_normal() override { g_recorded_calls.push_back("in_set_cursor_normal"); }
 	// Echoes back the current X/Y axes ("Y-axis first, then X-axis", per
-	// View::setScanDims()'s own contract comment) as an "accept
-	// unchanged" answer, rather than leaving *new_dim_list null: found
-	// while writing test_button_dispatch.cc (Phase 1) that
-	// setScanDims()'s cancel check (`scan_dims_result ==
-	// static_cast<int>(Message::Cancel)`) is documented dead code -- an
-	// upstream quirk where the real returned status is never actually
-	// Message::Cancel's numeric value -- so it *always* falls through to
-	// dereferencing *new_dim_list, unconditionally, regardless of what
-	// this stub returns. A real UI's dialog always populates the list on
+	// ViewerUi::in_set_scan_dims()'s contract) as an "accept unchanged"
+	// answer.
+	//
+	// Phase 1 populated this unconditionally because setScanDims()'s
+	// cancel check was dead (it compared against Message::Cancel, which
+	// is 2, while this seam returns 0/1), so the caller *always* fell
+	// through to dereferencing *new_dim_list -- and the conclusion drawn
+	// at the time was "a real UI's dialog always populates the list on
 	// every path that survives that point; this stub needs to as well or
-	// every call crashes.
+	// every call crashes."
+	//
+	// That conclusion was wrong, and it is why the bug survived to Phase
+	// 13a: MainWindow::scanDimsDialog() (ui/src/main_window_dialogs.cc)
+	// returns 0 on Cancel WITHOUT writing *new_dim_list, so the real UI
+	// segfaulted on every cancel while this stub quietly papered over it.
+	// setScanDims() now honours the 0/1 status; set
+	// g_set_scan_dims_populate = false to reproduce what the FLTK dialog
+	// actually does on Cancel.
 	int in_set_scan_dims(const Stringlist*, const char *cur_x_name, const char *cur_y_name, Stringlist **new_dim_list) override {
 		g_recorded_calls.push_back("in_set_scan_dims");
+		if (!g_set_scan_dims_populate) return g_set_scan_dims_response;
 		if (new_dim_list) {
 			*new_dim_list = nullptr;
 			if (cur_y_name) stringlist_add_string(new_dim_list, cur_y_name);

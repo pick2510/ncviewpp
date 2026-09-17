@@ -87,6 +87,17 @@ ViewerController::range( Modifier modifier )
 void
 ViewerController::dimset( Modifier modifier )
 {
+	/* Phase 13a: the only dispatch() handler reaching straight into view->
+	 * with no "is a variable selected yet?" check -- the same session fact
+	 * changeCurDim()/setCurDimIndex() below already guard, and with the
+	 * same message. Button::Dimset is insensitive until the first variable
+	 * is selected, so this is defence in depth rather than a reproduced
+	 * crash, but it costs nothing and removes the odd one out. */
+	if( view == NULL ) {
+		in_error( "Please select a variable first" );
+		return;
+		}
+
 	view->setScanDims();
 }
 

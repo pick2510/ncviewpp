@@ -54,6 +54,14 @@ public:
 	virtual void	in_set_cur_dim_value	( const char *name, const char *string ) = 0;
 	virtual void 	in_set_cursor_busy	( void ) = 0;
 	virtual void 	in_set_cursor_normal	( void ) = 0;
+	/* Returns 1 if the user accepted the dialog, 0 if they cancelled it (or
+	 * if there was nothing to choose between). *new_dim_list is written
+	 * ONLY when 1 is returned: a freshly built two-entry list, Y-axis
+	 * name first and X-axis name second, which the caller then owns. On 0
+	 * the pointer is left exactly as the caller passed it. Callers must
+	 * check the return value before dereferencing the list -- see
+	 * View::setScanDims() (Phase 13a), where not doing so was a live
+	 * segfault on every Cancel. */
 	virtual int 	in_set_scan_dims	( const Stringlist *dim_list, const char *x_axis, const char *y_axis, Stringlist **new_dim_list ) = 0;
 	virtual void 	in_flush		( void ) = 0;
 	virtual int	in_popup_XY_graph	( size_t n, int dimindex, double *xvals, double *yvals, const char *x_axis_title,

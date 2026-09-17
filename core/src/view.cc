@@ -1115,11 +1115,22 @@ View::setScanDims()
 	/* Pop up the dialog box which asks for the user's selection */
 	scan_dims_result = ui.in_set_scan_dims( dim_list, cur_x_name,
 				cur_y_name, &new_dim_list );
-	/* Pre-existing upstream quirk, preserved: in_set_scan_dims() returns a
-	 * plain 0/1 (cancelled/ok), never Message::Cancel's numeric value, so
-	 * this check never actually fires -- see modernization.md's Phase 1
-	 * follow-up notes. */
-	if( scan_dims_result == static_cast<int>(Message::Cancel) )
+	/* Phase 13a: this used to compare against Message::Cancel, which is 2,
+	 * while in_set_scan_dims() returns a plain 0/1 -- so the check never
+	 * fired and the (*new_dim_list)[0] below dereferenced the still-NULL
+	 * new_dim_list on every cancel. That was a real SIGSEGV: press "Axes",
+	 * press "Cancel", core dump. MainWindow::scanDimsDialog()
+	 * (ui/src/main_window_dialogs.cc) returns 0 without ever writing
+	 * *new_dim_list on both of its early-out paths (the user cancelled,
+	 * and an empty dim_list), so test both the status and the list --
+	 * neither alone covers the other.
+	 *
+	 * The dead comparison was noticed during Phase 1 and written off as a
+	 * harmless upstream quirk, on the assumption that a real UI always
+	 * populates the list on any path reaching here. This port's own FLTK
+	 * dialog doesn't, which is what made it a live crash rather than a
+	 * curiosity. */
+	if( (scan_dims_result != 1) || (new_dim_list == NULL) )
 		return;
 
 	/* A special check: we don't allow transposition of the data

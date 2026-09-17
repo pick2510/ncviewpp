@@ -193,3 +193,59 @@ TEST_CASE("view_set_cur_dim_index: an unresolvable dimension name does not read 
             reported_error = true;
     CHECK(reported_error);
 }
+
+TEST_CASE("View::setScanDims: pressing Cancel in the Axes dialog is a no-op, not a segfault (Phase 13a)") {
+    // Regression test for a user-reported core dump ("I sometimes had core
+    // dumps when I cancel an operation with a cancel button").
+    //
+    // setScanDims() tested the dialog's result against Message::Cancel,
+    // which is 2, while in_set_scan_dims() returns a plain 0/1 -- so the
+    // check never fired and the (*new_dim_list)[0] immediately below
+    // dereferenced a Stringlist* that MainWindow::scanDimsDialog() had
+    // deliberately left NULL on its cancel path. Confirmed SIGSEGV against
+    // the unmodified function before this fix landed (revert the guard,
+    // rebuild, run this test: the process dies with no doctest summary).
+    SessionFixture fx;
+    NcFixture nc;
+    select_dims_variable(nc, "dims_cancel_axes", 3);
+    REQUIRE(view != nullptr);
+
+    const int x_before = view->x_axis_id;
+    const int y_before = view->y_axis_id;
+
+    // What the FLTK dialog does on Cancel: return 0, leave *new_dim_list
+    // exactly as the caller passed it (see stub_interface.cc).
+    g_set_scan_dims_populate = false;
+    g_set_scan_dims_response = 0;
+
+    view->setScanDims();
+
+    // Reaching this line at all is the main point; the axes must also be
+    // untouched, since the user cancelled.
+    CHECK(view->x_axis_id == x_before);
+    CHECK(view->y_axis_id == y_before);
+}
+
+TEST_CASE("View::setScanDims: a dialog that reports success but returns no list is also a no-op (Phase 13a)") {
+    // The other half of the guard. scanDimsDialog() has a second bare
+    // `return 0` (an empty dim_list) that likewise never writes
+    // *new_dim_list, and a future UI could get the pair out of step in
+    // the opposite direction too. Checking the status alone would not
+    // cover this; checking the list alone would not cover a UI that
+    // populates the list and *then* reports cancellation.
+    SessionFixture fx;
+    NcFixture nc;
+    select_dims_variable(nc, "dims_ok_but_no_list", 3);
+    REQUIRE(view != nullptr);
+
+    const int x_before = view->x_axis_id;
+    const int y_before = view->y_axis_id;
+
+    g_set_scan_dims_populate = false;
+    g_set_scan_dims_response = 1;	/* "OK" -- but no list written */
+
+    view->setScanDims();
+
+    CHECK(view->x_axis_id == x_before);
+    CHECK(view->y_axis_id == y_before);
+}
