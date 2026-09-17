@@ -12,15 +12,14 @@ endif()
 include(GNUInstallDirs)
 
 # ---------------------------------------------------------------------------
-# Homebrew / Linuxbrew isolation (macOS and Linux both).
+# Linuxbrew isolation (Linux only -- see below for why macOS is excluded).
 #
 # A brew install puts a full parallel stack of libraries, headers and
 # pkg-config files on the machine and puts its own bin/ ahead of the system
 # one on PATH. From there:
 #   - CMake's find_package()/find_library()/find_path() derive extra search
 #     prefixes from PATH (stripping a trailing /bin or /sbin off each entry)
-#     and from CMAKE_SYSTEM_PREFIX_PATH, which CMake itself seeds with
-#     /opt/homebrew on Apple Silicon;
+#     and from CMAKE_SYSTEM_PREFIX_PATH;
 #   - pkg-config honors PKG_CONFIG_PATH;
 #   - gcc/clang honor CPATH/C_INCLUDE_PATH/CPLUS_INCLUDE_PATH/LIBRARY_PATH
 #     directly, independent of any CMake variable.
@@ -32,6 +31,20 @@ include(GNUInstallDirs)
 # the brew prefix once, up front, and exclude it from every one of those
 # lookup mechanisms, for this project and for the third_party/fltk and
 # third_party/udunits2 subprojects it configures below.
+#
+# Linux only: on Linux, the system already has its own package manager and
+# its own copy of these libraries, so a Linuxbrew install is a genuinely
+# foreign, optional add-on worth isolating against. On macOS there is no
+# separate "system stack" to prefer instead -- Homebrew IS how this project's
+# dependencies (netCDF in particular, see the `brew install` step in CI) are
+# installed, so excluding it would break discovery, not protect it: this
+# used to run unconditionally and did fire on macOS CI, but only "worked" by
+# accident because pkg-config's own Homebrew build carries /opt/homebrew in
+# its compiled-in default search path regardless of PKG_CONFIG_PATH --
+# find_package(netCDF)'s CMake-native search was silently excluded and
+# quietly fell back to that pkg-config path every time. Restricted to Linux
+# to stop fighting the platform it's meant to help.
+if(UNIX AND NOT APPLE)
 find_program(_ncview_brew_executable brew)
 if(_ncview_brew_executable)
     execute_process(
@@ -43,19 +56,16 @@ endif()
 if(NOT _ncview_brew_prefix)
     # No `brew` on PATH to ask (e.g. a PATH that carries brew's lib/include
     # via some other inherited *_PATH variable but not its bin/) -- fall
-    # back to the well-known install locations.
-    foreach(_ncview_brew_candidate /opt/homebrew /home/linuxbrew/.linuxbrew)
-        if(IS_DIRECTORY "${_ncview_brew_candidate}")
-            set(_ncview_brew_prefix "${_ncview_brew_candidate}")
-            break()
-        endif()
-    endforeach()
+    # back to the well-known install location.
+    if(IS_DIRECTORY /home/linuxbrew/.linuxbrew)
+        set(_ncview_brew_prefix /home/linuxbrew/.linuxbrew)
+    endif()
 endif()
 unset(_ncview_brew_executable CACHE)
 
 if(_ncview_brew_prefix)
     get_filename_component(_ncview_brew_prefix "${_ncview_brew_prefix}" ABSOLUTE)
-    message(STATUS "Detected Homebrew/Linuxbrew at ${_ncview_brew_prefix} -- excluding it from library/header search")
+    message(STATUS "Detected Linuxbrew at ${_ncview_brew_prefix} -- excluding it from library/header search")
 
     # Covers CMake's own prefix-based find_*() search. Needs CMake 3.23; a
     # no-op on this project's older-supported 3.21/3.22, where the
@@ -125,8 +135,8 @@ if(_ncview_brew_prefix)
     unset(_ncview_sys_pkgconfig_dirs)
     unset(_ncview_sys_pkgconfig_path)
 endif()
-unset(_ncview_brew_candidate)
 unset(_ncview_brew_prefix)
+endif()
 
 # core/modernization.md Phase 0a: surface every warning the compiler already
 # has an opinion about, without failing the build on them yet (see
