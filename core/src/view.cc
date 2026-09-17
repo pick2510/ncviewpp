@@ -798,8 +798,19 @@ View::determineScanAxes( NCVar *var, View *old_view )
 		view->plot_XY_axis = view->x_axis_id;
 	/* We can't do an XY plot of dimensions that have a count
 	 * of one.  In that case, try to set it to something else.
+	 *
+	 * Phase 13d: the plot_XY_axis != -1 half is new. View::create() sets
+	 * plot_XY_axis = -1, and neither branch above assigns it if
+	 * initialDetermineScanAxes() left both scan_axis_id and x_axis_id at
+	 * -1 -- which its own degrade paths do. size[] is a std::vector, so
+	 * size[-1] is size[SIZE_MAX], an out-of-bounds read of the eight heap
+	 * bytes preceding the buffer; whether the block below then ran at all
+	 * came down to what was in them. With no axis to plot along there is
+	 * nothing to reconsider, so leaving plot_XY_axis at -1 is correct --
+	 * ViewerController::plotXY() already reports that case.
 	 */
-	if( view->variable->size[view->plot_XY_axis] == 1 ) {
+	if( (view->plot_XY_axis != -1) &&
+	    (view->variable->size[view->plot_XY_axis] == 1) ) {
 		if( (view->scan_axis_id != -1) &&
 		    (view->variable->size[view->scan_axis_id] > 1))
 			view->plot_XY_axis = view->scan_axis_id;
@@ -832,11 +843,24 @@ View::determineScanAxes( NCVar *var, View *old_view )
 		if( view->y_axis_id == view->scan_axis_id )
 			view->scan_axis_id = -1;
 
-		/* Final sanity checks! */
+		/* Final sanity checks!
+		 *
+		 * Phase 13d: the bounds comparisons were `>`, off by one -- a
+		 * valid axis id is 0..n_dims-1, so an id of exactly n_dims (which
+		 * reDetermineScanAxes() can install, since it maps ids between
+		 * two different variables' dimension lists) passed the check and
+		 * then indexed size[]/dim[] one element past the end. Also note
+		 * this only *re-runs* the fallback; it deliberately does not
+		 * re-check afterwards, because initialDetermineScanAxes() is
+		 * itself the authority on what this variable's axes are -- if it
+		 * comes back with -1s, that is the honest answer and
+		 * View::has2dAxes() (Phase 13b) is what the rest of the code
+		 * consults about it.
+		 */
 		if( (view->x_axis_id == -1) ||
 		    (view->y_axis_id == -1) ||
-		    (view->x_axis_id > view->variable->n_dims) ||
-		    (view->y_axis_id > view->variable->n_dims))
+		    (view->x_axis_id >= view->variable->n_dims) ||
+		    (view->y_axis_id >= view->variable->n_dims))
 			initialDetermineScanAxes( var );
 		}
 }
@@ -874,6 +898,22 @@ View::initialDetermineScanAxes( NCVar *var )
 			view->x_axis_id    = file0->dimNameToId(
 					const_cast<char *>(var->name.c_str()),
 					(char *)(*dimlist)[0].string.c_str() );
+			/* Phase 13d: case 2 and default below got this check in
+			 * Phase 12e; case 1 was overlooked, presumably because it
+			 * already sets two of the three ids to -1 by design and so
+			 * looked like it was handling the sentinel. It wasn't: an
+			 * unresolved x_axis_id here is the one that leaves
+			 * set_scan_variable()'s 1-D path indexing count[-1] and
+			 * size[-1] (view.cc, both plot-and-return blocks), an
+			 * out-of-bounds heap write. Same report-and-degrade shape as
+			 * its siblings. */
+			if( view->x_axis_id == -1 ) {
+				fprintf( stderr, "initial_determine_scan_axes: internal error: dim >%s< was indicated by routine fi_scannable_dims to be a scannable dim for var >%s<, but routine fi_dim_name_to_id did not find that dim for the var\n",
+					(*dimlist)[0].string.c_str(), const_cast<char *>(var->name.c_str()) );
+				in_error( "Internal error determining this variable's axes; it may not display correctly." );
+				view->scan_axis_id = view->y_axis_id = view->x_axis_id = -1;
+				return;
+				}
 			break;
 
 		case 2:
@@ -1720,9 +1760,17 @@ View::setScanPlace( NCVar *var, View *old_view )
 
 	/* All place information for the displayed axes MUST be
 	 * set to zero!!
-	 */
-	new_view->var_place[new_view->x_axis_id] = 0L;
-	new_view->var_place[new_view->y_axis_id] = 0L;
+	 *
+	 * Phase 13d: guarded the same way View::setAxis() was in Phase 12e --
+	 * same file, same vector, same -1 sentinel. var_place is
+	 * std::vector<size_t>, so var_place[-1] is var_place[SIZE_MAX], an
+	 * out-of-bounds heap WRITE; confirmed under ASan. initialSetScanPlace()
+	 * above has already zeroed every real dimension, so skipping an
+	 * unresolved axis loses nothing. */
+	if( new_view->x_axis_id != -1 )
+		new_view->var_place[new_view->x_axis_id] = 0L;
+	if( new_view->y_axis_id != -1 )
+		new_view->var_place[new_view->y_axis_id] = 0L;
 }
 
 /**************************************************************************************/

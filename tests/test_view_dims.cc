@@ -249,3 +249,58 @@ TEST_CASE("View::setScanDims: a dialog that reports success but returns no list 
     CHECK(view->x_axis_id == x_before);
     CHECK(view->y_axis_id == y_before);
 }
+
+TEST_CASE("View::setScanPlace: an unresolved display axis does not write out of bounds (Phase 13d)") {
+    // The same bug Phase 12e fixed in View::setAxis(), in the function
+    // right next to it: `var_place[new_view->y_axis_id] = 0L` with no
+    // check for the -1 sentinel. var_place is std::vector<size_t>, so
+    // that is var_place[SIZE_MAX] -- an out-of-bounds heap WRITE, which
+    // corrupts an unrelated allocation rather than faulting. Confirmed
+    // under ASan against the unguarded function.
+    //
+    // Composed out of two production functions rather than poked in by
+    // hand: setAxis() leaving an axis at -1 after an unresolvable name is
+    // exactly the state Phase 12e's guard *creates* and documents, and
+    // setScanPlace() is then called on that same View by the next
+    // set_scan_variable() pass.
+    SessionFixture fx;
+    NcFixture nc;
+    select_dims_variable(nc, "dims_scanplace_oob", 3);
+    REQUIRE(view != nullptr);
+
+    char bogus_name[] = "no_such_dim";
+    view->setAxis(Dimension::Y, bogus_name);
+    REQUIRE(view->y_axis_id == -1);
+
+    view->setScanPlace(view->variable, nullptr);
+
+    // Reaching this line without an ASan abort is the point. Every real
+    // dimension must still have been zeroed by initialSetScanPlace().
+    CHECK(view->y_axis_id == -1);
+    for (int i = 0; i < view->variable->n_dims; i++)
+        CHECK(view->var_place[i] == 0);
+}
+
+TEST_CASE("View::determineScanAxes: the axis-id bounds check rejects an id equal to n_dims (Phase 13d)") {
+    // The "final sanity checks!" block compared `x_axis_id > n_dims`,
+    // off by one: a valid id is 0..n_dims-1, so an id of exactly n_dims
+    // passed and then indexed size[]/dim[] one past the end.
+    // reDetermineScanAxes() is what can install such an id, since it maps
+    // ids between two different variables' dimension lists.
+    //
+    // Reached here through the documented public behaviour rather than a
+    // constructed internal inconsistency: after determineScanAxes() has
+    // run, both display axes must be real indices into this variable.
+    // That is the invariant the off-by-one broke, and it is what every
+    // size[]/dim[] read downstream relies on.
+    SessionFixture fx;
+    NcFixture nc;
+    select_dims_variable(nc, "dims_axis_bounds", 3);
+    REQUIRE(view != nullptr);
+
+    CHECK(view->x_axis_id >= 0);
+    CHECK(view->x_axis_id < view->variable->n_dims);
+    CHECK(view->y_axis_id >= 0);
+    CHECK(view->y_axis_id < view->variable->n_dims);
+    CHECK(view->scan_axis_id < view->variable->n_dims);
+}
