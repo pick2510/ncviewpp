@@ -3881,6 +3881,215 @@ confirms zero live `exit()` calls remain in `netcdf_fi_get_data()` (the
 pre-existing, out-of-scope variable-lookup-failure `exit()` in
 `netcdf_fill_value()` is untouched, as scoped).
 
+## Part VI, Phases 13a-13d: two user-reported crashes
+
+Two live crashes reported against the running application, neither
+covered by anything in Parts I-V:
+
+> "I sometimes had core dumps when I cancel an operation with a cancel
+> button"
+> "if I change from 1d to 3d back and forward multiple times it can
+> crash"
+
+Both were reproduced against unmodified `HEAD` before anything was
+changed. They turned out to be two unrelated bugs that share one
+trigger: displaying a variable that has no 2-D picture.
+
+### Phase 13a: the Cancel crash was a NULL dereference
+
+`MainWindow::scanDimsDialog()` (`ui/src/main_window_dialogs.cc`) returns
+`0` on Cancel **without writing** `*new_dim_list`. `View::setScanDims()`
+tried to detect that with
+`scan_dims_result == static_cast<int>(Message::Cancel)` -- but
+`Message::Cancel` is `2` and the dialog returns `0`/`1`, so the check
+never fired and the next line dereferenced a still-`NULL`
+`Stringlist*`. Press "Axes", press "Cancel", core dump. Every time,
+100% reproducible, `SIGSEGV`.
+
+**This had been seen before and mis-assessed.** Phase 1 noticed the
+dead comparison, wrote it off as a harmless upstream quirk, and
+*worked around it in the test stub* on the stated assumption that "a
+real UI's dialog always populates the list on every path that survives
+that point". That assumption is false for this port's own FLTK dialog,
+and encoding it in `stub_interface.cc` is exactly why no test ever saw
+the crash. The lesson is the plan's rule 2 again: an inventory claim
+about *why* something is safe deserves the same re-verification as a
+claim about what the code does.
+
+`setScanDims()` now checks both the status and the list -- neither alone
+covers both of `scanDimsDialog()`'s bare `return 0` paths. The `0`/`1`
+contract, and that `*new_dim_list` is written only on `1`, are now
+documented on `ViewerUi::in_set_scan_dims()` itself rather than left to
+be rediscovered. `ViewerController::dimset()` also gained the
+"Please select a variable first" null-view guard every sibling handler
+already had; it was the only `dispatch()` handler reaching into `view->`
+unchecked.
+
+The other Cancel-capable dialogs were checked for the same shape while
+here: `x_range`, `printerOptionsDialog`, `in_choose_save_file` and
+`in_dialog` all return a real `Message` and are handled correctly.
+`setScanDims()` was the only one misreading its seam's status.
+
+### Phase 13b: the 1-D crash was a whole bug class
+
+Selecting a 1-D variable leaves the session half-initialized by design.
+`View::initialDetermineScanAxes()`'s `case 1` sets `y_axis_id = -1`, and
+`set_scan_variable()`'s plot-and-return path then skips
+`allocStorage()`/`fillViewData()` entirely, so `data` stays empty.
+Meanwhile `FltkViewerUi::in_popdown_2d_window()` was an empty no-op, so
+the **previous** variable's picture stayed on screen, clickable, with the
+whole toolbar still live.
+
+`size[]`, `dim[]`, `dim_map_info[]` and `var_place[]` are all
+`std::vector`, so indexing them by `-1` is indexing by `SIZE_MAX`: a
+read, or in `plotXY()` and `fillViewData()` a **write**, eight bytes
+before the buffer. A write like that corrupts an unrelated allocation
+and kills the process later, somewhere else -- which is exactly why the
+reporter saw it only "sometimes", after switching back and forth several
+times, and why it never showed up in a plain build.
+
+Sweeping all 25 controls reachable in that state found **14** that did
+this: `plotXY()`, `setMinFromCurdata()`, `setMaxFromCurdata()`,
+`setScanDims()`, `changeBlowup()`, `dataEdit()`, `allocStorage()`,
+`fillViewData()`, `initSaveframes()`, `redrawDimensionInfo()`,
+`hasMissingData()`, `do_print()`, `gen_overlay_internal()` and
+`invertPhysical()`. Three more fail by inspection for the same reason:
+`setDataeditPlace()` (middle click), `changeDat()`, `dataEditDump()`.
+
+**Upstream had met this exact scenario once and guarded one caller.**
+`ViewerController::reportPosition()` carries a comment naming it
+precisely -- "click on a 2-d variable, then click on a 1-d variable,
+then move the pointer back over the displayed colormap of the (old) 2-d
+variable". The hover was guarded; the click, every button, and every
+internal helper were not. That single guard is probably *why* the rest
+looked safe by analogy and were never checked.
+
+Two named predicates were added on `View` rather than open-coding
+seventeen comparisons, because they are genuinely different conditions:
+
+- `has2dAxes()` -- both display axis ids resolved.
+- `has2dImage()` -- that, plus a `data` buffer actually sized for it.
+
+A valid-looking pair of axis ids is **not** on its own evidence that
+`data` exists: `allocStorage()` is also skipped for a variable whose
+`effective_dimensionality` is 1 but whose x/y axes did resolve, e.g. a
+`(time=1, lat=1, lon=50)` field. `hasMissingData()` is the proof that
+this distinction matters: its axis-id guard was already correct and it
+still crashed, because with `x_axis_id` a perfectly good `0` the read
+loop walked off an empty vector -- a real `SIGSEGV`, not a quiet
+overread.
+
+Guarded in two layers, since guarding only the entry points would be a
+reachability guess and this phase's own sweep already disproved one of
+those: the entry points report an error where the user pressed a button
+and degrade silently for mouse events that fire continuously; the leaf
+helpers that write through the index return without touching a buffer,
+so no path missed above can corrupt the heap. `do_overlay()` still lets
+`OVERLAY_NONE` through -- turning an overlay *off* touches none of this
+and is how the user recovers.
+
+**Note for future tests here:** `effective_dimensionality` is computed
+exactly once, by `ncview_main()` (`core/src/ncview.cc`), and **not** by
+`Dataset::addVariable()`. A test that goes straight to `addVariable()`
+-- as every test in this tree does -- leaves it at `0` for every
+variable, which is a state the real application never reaches and which
+manufactures out-of-bounds writes rather than reproducing the reported
+ones. The first repro attempt for this phase fell into exactly that trap
+and had to be corrected.
+
+### Phase 13c: stop the state being reachable at all
+
+Guards stop the corruption; they do not stop the application offering
+the user controls it cannot honour. Three things were wrong here, each
+hiding the next:
+
+1. `in_popup_2d_window()`/`in_popdown_2d_window()` were empty no-ops.
+   Core already calls them in exactly the right places. Implemented as
+   `show()`/`hide()` on `MainWindow`'s `ImageView`; hiding also stops
+   FLTK routing clicks to `ImageView::handle()`, which is what fed
+   `plotXY()`/`setMin`/`MaxFromCurdata()`/`setDataeditPlace()`.
+
+2. `set_scan_variable()`'s 1-D early return never called
+   `setScanButtons()`, so the toolbar kept whatever state the
+   **previous** variable left it in -- `BUTTONS_ALL_ON` after any
+   ordinary 2-D field. Both 1-D paths now call it, and
+   `setScanButtons()` selects a new `BUTTONS_2D_OFF` state when
+   `has2dAxes()` is false. That state turns off everything acting on the
+   picture and deliberately leaves on the controls the 13b sweep proved
+   safe (ColormapSelect, InvertColormap, Range, Info). It is distinct
+   from `BUTTONS_ALL_OFF`, which is `invalidate_variable()`'s "this
+   variable is unusable" state.
+
+3. **Found only because (2) was checked against the real binary rather
+   than the test stub**: `MainWindow::setSensitive()` had no lasting
+   effect at all. `rebuildButtonBar()` `clear()`s `button_bar_` and
+   constructs brand-new -- and therefore active -- `Fl_Button`s on every
+   relayout, silently discarding whatever state core had last applied.
+   Pre-existing and not specific to this phase: `BUTTONS_TIMEAXIS_OFF`
+   and `BUTTONS_ALL_OFF` were being thrown away the same way.
+   `MainWindow` now remembers the requested sensitivity per `Button` id
+   and re-applies it to each newly built button. The core test suite
+   could never have caught this -- the stub records what core *asked
+   for*, which was right all along.
+
+Golden churn: `var_1d.png` only, reviewed rather than regenerated.
+Running `ui_smoke.sh --update` rewrote all 15 goldens and `git` reported
+exactly one modified, so the other 14 are byte-identical. The `var_1d`
+diff is the two intended changes and nothing else: the empty grey image
+pane is gone, and the tape-recorder buttons plus Restart are greyed.
+
+### Phase 13d: 4 more Phase-12e-class writes, found while hunting
+
+Not user-reported. All four are the shape Phase 12e fixed in
+`View::setAxis()`:
+
+- `View::setScanPlace()` wrote `var_place[x_axis_id]` and
+  `var_place[y_axis_id]` unconditionally -- an out-of-bounds heap
+  **write**, confirmed under ASan, in the function immediately next to
+  the one 12e guarded.
+- `View::determineScanAxes()` read `size[plot_XY_axis]` while
+  `plot_XY_axis` could still be `View::create()`'s `-1`.
+- `View::initialDetermineScanAxes()`'s `case 1` never checked
+  `dimNameToId()` for `-1`. Phase 12e added that check to `case 2` and
+  `default` but missed `case 1`, presumably because it already assigns
+  `-1` to two of the three ids by design and so *looked* like it was
+  handling the sentinel.
+- The "final sanity checks!" bounds comparisons were `>` rather than
+  `>=`. A valid axis id is `0..n_dims-1`, so an id of exactly `n_dims`
+  passed and then indexed one element past the end.
+
+The first is reproduced through a composition of two production
+functions (`setAxis()` leaving an axis at `-1` is precisely the state
+12e's own guard creates and documents) and confirmed by revert-and-
+observe-ASan-abort. The last two are internal-error paths with no
+fixture to construct them from, so they are fixed by inspection against
+12e's precedent and recorded as such -- the same call Phase 12g made for
+`overlay.cc`'s wrong loop variable.
+
+Deliberately left as-is: `determineScanAxes()` still does not re-check
+after re-running `initialDetermineScanAxes()`, because that function is
+the authority on what a variable's axes are. If it answers with `-1`s
+that is the honest answer, and `has2dAxes()` is what the rest of the
+code now consults about it.
+
+### Counts and verification
+
+266 -> 282 tests, 7083 -> 7908 assertions across the four phases. Each
+phase was verified independently with the full six-gate suite: clean
+CI-matching build (`cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo`,
+no manual flag override), `ctest` normal and `--order-by=rand` across 3
+seeds, `ncview_core_linkcheck` exit 0, all 16 `ui_smoke.sh` cases
+passing, a full-suite scratch ASan/UBSan build, and a `grep` pass for
+stale references. Phase 13c additionally required a live Xvfb run of the
+real binary, which is what surfaced its third finding.
+
+### Recorded, not fixed
+
+Two `Stringlist` leaks on the 1-D selection path, both pre-existing and
+both confirmed by LeakSanitizer: `View::reDetermineScanAxes()` never
+frees the list `scannableDims()` returns, and `View::plotXYSc()` does the
+same. Leaks, not crashes, and unrelated to either reported bug.
+
 ## Post-v0.2.0 defect audits
 
 Four rounds of external code review against the released `v0.2.x` builds
