@@ -71,6 +71,12 @@ static NCDim *plot_XY_dim[MAX_PLOT_XY];
 #define	BUTTONS_ALL_ON		1
 #define	BUTTONS_TIMEAXIS_OFF	2
 #define	BUTTONS_ALL_OFF		3
+/* Phase 13c: everything that acts on the 2-D picture, for a variable that
+ * hasn't got one (View::has2dAxes() false). Distinct from BUTTONS_ALL_OFF,
+ * which is the "this variable is unusable, stand down" state
+ * invalidate_variable() uses: the controls that still make sense for a 1-D
+ * plot -- colormap, invert-colormap, range, info -- stay on here. */
+#define	BUTTONS_2D_OFF		4
 
 /* Prototypes applicable to routines used ONLY in this file. Declarations
  * for invalidate_variable/mouse_xy_to_data_xy/view_data_edit_warn moved
@@ -143,6 +149,13 @@ set_scan_variable( NCVar *var, ViewerSession &session, ViewerUi &ui )
 			if( options.debug )
 				fprintf( stderr, "set_scan_variable (A): about to call plot_XY_sc\n" );
 			view->plotXYSc( start.data(), count.data() );
+			/* Phase 13c: this early return used to skip
+			 * setScanButtons() entirely, so the toolbar kept
+			 * whatever state the PREVIOUS variable left it in --
+			 * BUTTONS_ALL_ON after any ordinary 2-D field. That is
+			 * why every 2-D-only control stayed pressable while a
+			 * 1-D variable was on screen. */
+			view->setScanButtons();
 			ui.in_popdown_2d_window();
 			ui.in_set_cursor_normal();
 			return(0);
@@ -205,6 +218,13 @@ set_scan_variable( NCVar *var, ViewerSession &session, ViewerUi &ui )
 			if( options.debug )
 				fprintf( stderr, "set_scan_variable (B): about to call plot_XY_sc\n" );
 			view->plotXYSc( start.data(), count.data() );
+			/* Phase 13c: this early return used to skip
+			 * setScanButtons() entirely, so the toolbar kept
+			 * whatever state the PREVIOUS variable left it in --
+			 * BUTTONS_ALL_ON after any ordinary 2-D field. That is
+			 * why every 2-D-only control stayed pressable while a
+			 * 1-D variable was on screen. */
+			view->setScanButtons();
 			ui.in_popdown_2d_window();
 			ui.in_set_cursor_normal();
 			return(0);
@@ -388,11 +408,26 @@ View::setScanButtons()
 {
 	View *local_view = this;
 	ViewerUi	&ui = *g_app.ui;
-	static int	set_state;
+	/* Phase 13c: was `static int` -- same leaked-static class Phases 11h
+	 * and 12c cleaned up elsewhere. Harmless in practice only because it
+	 * is assigned unconditionally on the line below before any read. */
+	int		set_state;
 	const char	*label    = NULL;
 	char		scalar_coord_str[1024];
 
 	set_state = BUTTONS_ALL_ON;
+
+	/* Phase 13c: no 2-D picture at all (a 1-D variable, or the degrade
+	 * paths that leave every axis id -1). Checked first and returned from
+	 * directly, because the two scan-axis cases below would only narrow a
+	 * state that is already a strict superset of them. */
+	if( ! local_view->has2dAxes() ) {
+		set_buttons( BUTTONS_2D_OFF, ui );
+		ui.in_set_label( Label::ScanPlace, "No 2-D display axes" );
+		local_view->constructScalarCoordStr( scalar_coord_str, 1020 );
+		ui.in_set_label( Label::ScalarDims, scalar_coord_str );
+		return;
+		}
 
 	/* If there is no scan axis, then disable the buttons
 	 * which access it.
@@ -1564,6 +1599,34 @@ set_buttons( int to_state, ViewerUi &ui )
 		ui.in_set_sensitive( Button::Fastforward, 	  false );
 		break;
 		
+	    case BUTTONS_2D_OFF:
+		/* The tape-recorder row: a View with no 2-D picture also has no
+		 * scan axis to step along (initialDetermineScanAxes()'s case 1
+		 * sets both to -1 together), so these would be off anyway. */
+		ui.in_set_sensitive( Button::Restart, 	  false );
+		ui.in_set_sensitive( Button::Rewind, 	  false );
+		ui.in_set_sensitive( Button::Backwards, 	  false );
+		ui.in_set_sensitive( Button::Pause, 	  false );
+		ui.in_set_sensitive( Button::Forward, 	  false );
+		ui.in_set_sensitive( Button::Fastforward, 	  false );
+		/* Act on the 2-D picture: each of these was a live crash before
+		 * Phase 13b's guards, and is meaningless here even with them. */
+		ui.in_set_sensitive( Button::InvertPhysical, false );
+		ui.in_set_sensitive( Button::Blowup, 	  false );
+		ui.in_set_sensitive( Button::BlowupType,	  false );
+		ui.in_set_sensitive( Button::Transform, 	  false );
+		ui.in_set_sensitive( Button::Print, 	  false );
+		ui.in_set_sensitive( Button::Dimset, 	  false );
+		ui.in_set_sensitive( Button::Edit,	  	  false );
+		/* Deliberately left ON: ColormapSelect, InvertColormap, Range and
+		 * Info all work on the variable rather than on the picture, and
+		 * the Phase 13b sweep confirmed each is safe in this state. */
+		ui.in_set_sensitive( Button::ColormapSelect, true );
+		ui.in_set_sensitive( Button::InvertColormap, true );
+		ui.in_set_sensitive( Button::Range, 	  true );
+		ui.in_set_sensitive( Button::Info,	  	  true );
+		break;
+
 	    case BUTTONS_ALL_OFF:
 		ui.in_set_sensitive( Button::Restart, 	  false );
 		ui.in_set_sensitive( Button::Rewind, 	  false );

@@ -779,6 +779,14 @@ void MainWindow::rebuildButtonBar( int available_width )
 				btn->callback( &MainWindow::buttonCallback, (void*)(intptr_t)static_cast<int>(spec.id) );
 				row->add( btn );
 				buttons_[static_cast<int>(spec.id)] = btn;
+				// Phase 13c: a new Fl_Button is active; re-apply whatever
+				// sensitivity core last asked for, or this rebuild
+				// silently re-enables buttons that were deliberately
+				// turned off (BUTTONS_2D_OFF for a variable with no 2-D
+				// picture, BUTTONS_TIMEAXIS_OFF, BUTTONS_ALL_OFF after
+				// invalidate_variable()).
+				if( button_insensitive_[static_cast<int>(spec.id)] )
+					btn->deactivate();
 			} else {
 				// "Delay:" label + a slider controlling options.frame_delay
 				// (0.0 = fastest, 1.0 = slowest -- see do_buttons.cc's
@@ -1003,6 +1011,11 @@ void MainWindow::setSensitive( Button button_id, int state )
 	}
 	int idx = static_cast<int>( button_id );
 	if( idx < 0 || idx >= (int)(sizeof(buttons_)/sizeof(buttons_[0])) ) return;
+	// Remembered so rebuildButtonBar() can re-apply it: it clear()s
+	// button_bar_ and constructs new, active Fl_Buttons on every relayout,
+	// which until Phase 13c silently discarded whatever state core had
+	// last asked for.
+	button_insensitive_[idx] = ( state == 0 );
 	// A given Button id has either a toolbar button (buttons_) or a menu
 	// item (menu_items_), never both -- whichever one this id actually has
 	// gets (de)activated, the other slot is just null.
@@ -1245,6 +1258,25 @@ void MainWindow::indicateActiveDim( Dimension /*dimension*/, const char *dim_nam
 void MainWindow::draw2DField( const unsigned char *data, size_t width, size_t height, size_t /*timestep*/ )
 {
 	image_->setData( data, width, height );
+}
+
+void MainWindow::setImageVisible( bool visible )
+{
+	if( image_ == nullptr )
+		return;
+	if( visible == (image_->visible() != 0) )
+		return;
+
+	// hide() also stops FLTK routing events to the widget, which is the
+	// half that matters: ImageView::handle() feeds clicks straight into
+	// ViewerController::plotXY()/setMin/MaxFromCurdata() and middle-drag
+	// into View::setDataeditPlace(), none of which a variable without a
+	// 2-D field can answer. The window redraw is what actually clears the
+	// stale picture from the screen -- a hidden child does not repaint the
+	// area it used to occupy on its own.
+	if( visible ) image_->show();
+	else          image_->hide();
+	if( win_ ) win_->redraw();
 }
 
 void MainWindow::createColormap( const char *name, const unsigned char *r, const unsigned char *g, const unsigned char *b )

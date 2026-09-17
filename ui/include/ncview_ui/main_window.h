@@ -204,6 +204,12 @@ public:
 	void  createColorbar( float user_min, float user_max, Transform transform );
 	void  drawColorbar();
 	void  populateVarList();
+	// Phase 13c: shows/hides the 2-D image pane, driven by core's
+	// in_popup_2d_window()/in_popdown_2d_window() seam. Both were empty
+	// no-ops in this port, so selecting a 1-D variable left the previous
+	// variable's picture on screen and fully clickable -- see
+	// tests/test_view_1d_guards.cc for what that reached.
+	void  setImageVisible( bool visible );
 	void  setCursorBusy( bool busy );
 	void  pixelToRgb( ncv_pixel pix, int *r, int *g, int *b ) const;
 	void  queryPointerPosition( int *x, int *y ) const;
@@ -278,6 +284,14 @@ private:
 	Fl_Choice         *colormap_choice_ = nullptr; // last child of var_pack_; see rebuildColormapChoice()
 	Fl_Box            *labels_[16] = {};          // indexed by LABEL_*
 	Fl_Widget         *buttons_[32] = {};          // indexed by BUTTON_*
+	// Phase 13c: the sensitivity core last asked for, per Button id, so it
+	// survives rebuildButtonBar() -- which clear()s button_bar_ and builds
+	// brand-new (and therefore active) Fl_Buttons on every relayout. Without
+	// this, every set_buttons() state core applies is silently thrown away
+	// the next time the window is laid out, BUTTONS_ALL_OFF included.
+	// Stored inverted so that the zero-initialized default means
+	// "sensitive", which is what a freshly built Fl_Button already is.
+	bool               button_insensitive_[32] = {};
 	// Parallel to buttons_[], for the actions moved into menu_bar_ instead
 	// of staying toolbar buttons (see setSensitive(), which activates/
 	// deactivates whichever of the two a given Button id actually has).

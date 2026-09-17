@@ -305,3 +305,82 @@ TEST_CASE("switching 3-D to 1-D and back repeatedly leaves a working 2-D view (P
         CHECK(g_app.controller.draw(true, false) == 0);
     }
 }
+
+TEST_CASE("1-D variable selected: the 2-D-only buttons are disabled and the pane is popped down (Phase 13c)") {
+    // The other half of the fix. Phase 13b stops the 2-D-only controls
+    // corrupting the heap; this stops them being offered at all.
+    //
+    // set_scan_variable()'s 1-D path used to return before ever calling
+    // setScanButtons(), so the toolbar kept whatever state the PREVIOUS
+    // variable left it in -- BUTTONS_ALL_ON after any ordinary 2-D field.
+    // Combined with FltkViewerUi::in_popdown_2d_window() being an empty
+    // no-op, the user was looking at a stale picture surrounded by live
+    // buttons, none of which the selected variable could answer.
+    SessionFixture fx;
+    NcFixture nc;
+    show_3d_then_1d(nc);
+
+    auto sensitivity = [](Button b) {
+        auto it = g_button_sensitivity.find(static_cast<int>(b));
+        REQUIRE(it != g_button_sensitivity.end());
+        return it->second;
+    };
+
+    // Everything that acts on the 2-D picture.
+    CHECK(sensitivity(Button::Dimset) == 0);
+    CHECK(sensitivity(Button::Print) == 0);
+    CHECK(sensitivity(Button::Edit) == 0);
+    CHECK(sensitivity(Button::Blowup) == 0);
+    CHECK(sensitivity(Button::BlowupType) == 0);
+    CHECK(sensitivity(Button::Transform) == 0);
+    CHECK(sensitivity(Button::InvertPhysical) == 0);
+    // The tape-recorder row: no 2-D picture also means no scan axis.
+    CHECK(sensitivity(Button::Forward) == 0);
+    CHECK(sensitivity(Button::Fastforward) == 0);
+    CHECK(sensitivity(Button::Rewind) == 0);
+
+    // Deliberately still usable: these act on the variable, not the
+    // picture, and the Phase 13b sweep confirmed each is safe here.
+    CHECK(sensitivity(Button::ColormapSelect) == 1);
+    CHECK(sensitivity(Button::InvertColormap) == 1);
+    CHECK(sensitivity(Button::Range) == 1);
+    CHECK(sensitivity(Button::Info) == 1);
+
+    // And core did ask the UI to take the stale picture off screen.
+    bool popped_down = false;
+    for (const auto &call : g_recorded_calls)
+        if (call == "in_popdown_2d_window") popped_down = true;
+    CHECK(popped_down);
+}
+
+TEST_CASE("selecting a 2-D variable re-enables the buttons and pops the pane back up (Phase 13c)") {
+    // The return leg: the new BUTTONS_2D_OFF state must not be sticky, or
+    // switching back from a 1-D variable would leave the application
+    // permanently crippled -- a worse bug than the one being fixed.
+    SessionFixture fx;
+    NcFixture nc;
+    show_3d_then_1d(nc);
+    resetStubRecording();
+
+    in_variable_selected("g3d");
+    REQUIRE(view != nullptr);
+    REQUIRE(view->has2dImage());
+
+    auto sensitivity = [](Button b) {
+        auto it = g_button_sensitivity.find(static_cast<int>(b));
+        REQUIRE(it != g_button_sensitivity.end());
+        return it->second;
+    };
+
+    CHECK(sensitivity(Button::Dimset) == 1);
+    CHECK(sensitivity(Button::Print) == 1);
+    CHECK(sensitivity(Button::Edit) == 1);
+    CHECK(sensitivity(Button::Blowup) == 1);
+    CHECK(sensitivity(Button::InvertPhysical) == 1);
+    CHECK(sensitivity(Button::Forward) == 1);
+
+    bool popped_up = false;
+    for (const auto &call : g_recorded_calls)
+        if (call == "in_popup_2d_window") popped_up = true;
+    CHECK(popped_up);
+}

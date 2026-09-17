@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,7 @@ std::vector<std::string> g_recorded_calls;
 Message g_dialog_response = Message::OK;
 Message g_range_response = Message::OK;
 Message g_printer_options_response = Message::OK;
+std::map<int,int> g_button_sensitivity;
 int g_set_scan_dims_response = 0;
 // Phase 13a: when false, in_set_scan_dims() leaves *new_dim_list exactly as
 // the caller passed it, which is what MainWindow::scanDimsDialog() does on
@@ -133,6 +135,7 @@ void resetStubRecording()
 	g_printer_options_response = Message::OK;
 	g_set_scan_dims_response = 0;
 	g_set_scan_dims_populate = true;
+	g_button_sensitivity.clear();
 	g_have_last_print_info = false;
 	g_last_print_info = PrintInfo();
 	g_last_print_options = PrintOptions();
@@ -214,7 +217,15 @@ public:
 	}
 	char *in_install_next_colormap(int) override { g_recorded_calls.push_back("in_install_next_colormap"); return nullptr; }
 	int in_set_2d_size(size_t, size_t) override { g_recorded_calls.push_back("in_set_2d_size"); return 0; }
-	void in_set_sensitive(Button, int) override { g_recorded_calls.push_back("in_set_sensitive"); }
+	// The button id/state pair is recorded as well as the call name (Phase
+	// 13c): set_buttons() (core/src/view.cc) applies a whole named state at
+	// once -- BUTTONS_ALL_ON / TIMEAXIS_OFF / 2D_OFF / ALL_OFF -- and which
+	// buttons a state leaves enabled is the thing worth asserting on. The
+	// bare call-name push stays for the existing ordering tests.
+	void in_set_sensitive(Button b, int state) override {
+		g_recorded_calls.push_back("in_set_sensitive");
+		g_button_sensitivity[static_cast<int>(b)] = state;
+	}
 	Message in_dialog(const char*, int) override { g_recorded_calls.push_back("in_dialog"); return g_dialog_response; }
 	void in_fill_dim_info(const NCDim*, int) override { g_recorded_calls.push_back("in_fill_dim_info"); }
 	void in_set_cur_dim_value(const char *name, const char *val) override { g_recorded_calls.push_back(std::string("in_set_cur_dim_value:") + (name ? name : "") + ":" + (val ? val : "")); }

@@ -558,8 +558,18 @@ int FltkViewerUi::in_popup_XY_graph( size_t n, int dimindex, double *xvals, doub
 			title, legend, scannable_dims );
 }
 
-void FltkViewerUi::in_popup_2d_window( void )   {}
-void FltkViewerUi::in_popdown_2d_window( void ) {}
+// Phase 13c: both were empty no-ops. Upstream really did pop its 2-D
+// colour-contour window up and down as variables were selected; this port
+// dropped that on the grounds that the pane is a fixed child widget rather
+// than a separate window, and nothing appeared to depend on it. Something
+// did: set_scan_variable()'s 1-D path calls in_popdown_2d_window() exactly
+// so the *previous* variable's picture stops being on screen and, more to
+// the point, stops being clickable. With these empty, a click on that
+// stale picture ran ViewerController::plotXY() against a View with
+// y_axis_id == -1 -- an out-of-bounds heap write. Phase 13b guards that
+// from core's side; this stops it being reachable at all.
+void FltkViewerUi::in_popup_2d_window( void )   { instance()->setImageVisible( true ); }
+void FltkViewerUi::in_popdown_2d_window( void ) { instance()->setImageVisible( false ); }
 
 int FltkViewerUi::in_report_auto_overlay( void )
 {
