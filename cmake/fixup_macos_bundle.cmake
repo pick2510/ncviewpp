@@ -37,7 +37,7 @@ if(NOT NCVIEW_OTOOL)
 endif()
 
 set(_ncview_lib_dir "${CMAKE_INSTALL_PREFIX}/${NCVIEW_BUNDLE_LIBDIR}")
-set(_ncview_bin "${CMAKE_INSTALL_PREFIX}/bin/ncview")
+set(_ncview_bin "${CMAKE_INSTALL_PREFIX}/bin/ncview++")
 
 file(GLOB _ncview_bundled_dylibs "${_ncview_lib_dir}/*.dylib")
 

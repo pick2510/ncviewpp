@@ -281,13 +281,13 @@ init_cmap_from_file( const char *dir_name, const char *file_name, int n_suffix )
 	long_file_name = long_file_name_buf.data();
 	snprintf( long_file_name, slen, "%s/%s", dir_name, file_name );
 	if( (cmap_file = fopen( long_file_name, "r" )) == NULL ) {
-		fprintf( stderr, "ncview.c: init_cmap_from_file: error " );
+		fprintf( stderr, "ncview++: init_cmap_from_file: error " );
 		fprintf( stderr, "opening file %s\n", long_file_name );
 		return;
 		}
 	for( i=0; i<256; i++ ) {
 		if( fgets( line, 128, cmap_file ) == NULL ) {
-			fprintf( stderr, "ncview: init_cmap_from_file: file %s finished ",
+			fprintf( stderr, "ncview++: init_cmap_from_file: file %s finished ",
 					long_file_name );
 			fprintf( stderr, "on line %d, but should have 256 lines: not a valid ncview cmap file\n", i+1 );
 			return;
@@ -295,28 +295,28 @@ init_cmap_from_file( const char *dir_name, const char *file_name, int n_suffix )
 
 		nentries = sscanf( line, "%d %d %d", &r_entry, &g_entry, &b_entry );
 		if( nentries != 3 ) {
-			fprintf( stderr, "ncview: init_cmap_from_file: incorrect number " );
+			fprintf( stderr, "ncview++: init_cmap_from_file: incorrect number " );
 			fprintf( stderr, "of entries on the line.  Should be 3\n" );
 			fprintf( stderr, "file %s, line %d\n", long_file_name, i+1 );
 			return;
 			}
 
 		if( check( r_entry, 0, 255 ) < 0 ) {
-			fprintf( stderr, "ncview: init_cmap_from_file: first entry (red) " );
+			fprintf( stderr, "ncview++: init_cmap_from_file: first entry (red) " );
 			fprintf( stderr, "is outside valid limits of 0 to 255.\n" );
 			fprintf( stderr, "file %s, line %d\n", long_file_name, i+1 );
 			return;
 			}
 
 		if( check( g_entry, 0, 255 ) < 0 ) {
-			fprintf( stderr, "ncview: init_cmap_from_file: second entry (green) " );
+			fprintf( stderr, "ncview++: init_cmap_from_file: second entry (green) " );
 			fprintf( stderr, "is outside valid limits of 0 to 255.\n" );
 			fprintf( stderr, "file %s, line %d\n", long_file_name, i+1 );
 			return;
 			}
 
 		if( check( b_entry, 0, 255 ) < 0 ) {
-			fprintf( stderr, "ncview: init_cmap_from_file: third entry (blue) " );
+			fprintf( stderr, "ncview++: init_cmap_from_file: third entry (blue) " );
 			fprintf( stderr, "is outside valid limits of 0 to 255.\n" );
 			fprintf( stderr, "file %s, line %d\n", long_file_name, i+1 );
 			return;

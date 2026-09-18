@@ -81,7 +81,7 @@ ncview_main( int argc, char **argv, ViewerUi &ui )
 		input_files = ui.in_choose_input_files();
 
 	if( stringlist_len( input_files ) == 0 ) {
-		fprintf( stderr, "ncview: no input files given; exiting.\n" );
+		fprintf( stderr, "ncview++: no input files given; exiting.\n" );
 		exit( 0 );
 		}
 
@@ -350,10 +350,10 @@ int any_var_in_group( const std::vector<std::unique_ptr<NCVar>> &vars ) {
 	void
 print_disclaimer()
 {
-fprintf( stderr, "%s\n", PROGRAM_ID );
+fprintf( stderr, "Ncview++ %s, a C++/FLTK port of %s\n", NCVIEWPP_VERSION, PROGRAM_ID );
 fprintf( stderr, "https://cirrus.ucsd.edu/ncview/\n" );
 fprintf( stderr, "Copyright (C) 1993 through 2024, David W. Pierce\n" );
-fprintf( stderr, "This C++/FLTK port, Copyright (C) 2026 Dominik Strebel\n" );
-fprintf( stderr, "Ncview comes with ABSOLUTELY NO WARRANTY; for details type `ncview -w'.\n" );
-fprintf( stderr, "This is free software licensed under the Gnu General Public License version 3; type `ncview -c' for redistribution details.\n\n" );
+fprintf( stderr, "Ncview++, Copyright (C) 2026 Dominik Strebel\n" );
+fprintf( stderr, "Ncview++ comes with ABSOLUTELY NO WARRANTY; for details type `ncview++ -w'.\n" );
+fprintf( stderr, "This is free software licensed under the Gnu General Public License version 3; type `ncview++ -c' for redistribution details.\n\n" );
 }

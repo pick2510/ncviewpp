@@ -121,7 +121,7 @@ determine_file_type( Stringlist *input_files )
 	struct stat 	buf;
 
 	if( input_files == NULL ) {
-		fprintf( stderr, "ncview: takes at least one file name as argument\n" );
+		fprintf( stderr, "ncview++: takes at least one file name as argument\n" );
 		useage();
 		exit( -1 );
 		}
@@ -132,13 +132,13 @@ determine_file_type( Stringlist *input_files )
 		{
 		ierr = stat( first_file, &buf );
 		if( ierr == 0 ) {
-			fprintf( stderr, "ncview: can't recognize format of input file %s\n",
+			fprintf( stderr, "ncview++: can't recognize format of input file %s\n",
 				first_file );
 			exit( -1 );
 			}
 		else
 			{
-			fprintf( stderr, "ncview: can't open file %s",
+			fprintf( stderr, "ncview++: can't open file %s",
 				first_file );
 			perror(" ");
 			exit( -1 );

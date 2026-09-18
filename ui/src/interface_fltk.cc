@@ -289,7 +289,7 @@ void dumpFrameToPng( const unsigned char *data, size_t width, size_t height, siz
 
 	std::vector<unsigned char> rgb = expandPixelsToRgb( data, width, height );
 	if( fl_write_png( filename, rgb.data(), (int)width, (int)height, 3 ) != 0 ) {
-		fprintf( stderr, "ncview: can't write PNG file %s\n", filename );
+		fprintf( stderr, "ncview++: can't write PNG file %s\n", filename );
 		error_state = true;
 	}
 }

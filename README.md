@@ -1,6 +1,6 @@
-# ncview (C++ / FLTK port)
+# Ncview++
 
-A from-scratch C++/FLTK/CMake port of [ncview](http://cirrus.ucsd.edu/ncview/),
+Ncview++ is a from-scratch C++/FLTK/CMake port of [ncview](http://cirrus.ucsd.edu/ncview/),
 David W. Pierce's netCDF visual browser. The original is C + X11/Xt/Athena
 widgets built with autotools; this port replaces the toolkit with
 [FLTK](https://www.fltk.org/) and the build with CMake. FLTK and
@@ -14,11 +14,20 @@ texinfo as build tools).
 See [`CHANGELOG.md`](CHANGELOG.md) for what's changed release-to-release,
 and [`PORTING.md`](PORTING.md) for the porting plan and design rationale.
 
+### Names
+
+The command is `ncview++`, and it installs its colormaps and man page
+under `ncview++` names, so it can be installed alongside the original
+`ncview`. Where `+` isn't allowed or safe (the GitHub repository,
+release archives, the CMake project name) the name is spelled `ncviewpp`.
+Settings are still kept in `~/.ncviewrc`, and extra colormaps are still
+found via `$NCVIEWBASE`, same as with the original.
+
 ## License
 
 GNU General Public License, version 3 -- see [`LICENSE`](LICENSE). Ncview
-itself is Copyright (C) 1993 through 2024, David W. Pierce; this C++/FLTK
-port is Copyright (C) 2026 Dominik Strebel.
+itself is Copyright (C) 1993 through 2024, David W. Pierce; Ncview++ is
+Copyright (C) 2026 Dominik Strebel.
 
 ## Installing
 
@@ -45,7 +54,7 @@ ctest --test-dir build
 ```
 
 ```sh
-./build/app/ncview some_file.nc
+./build/app/ncview++ some_file.nc
 ```
 
 To install:
@@ -71,7 +80,7 @@ deliberately left dynamic and why.
 ```sh
 cmake -S . -B build-static -DCMAKE_BUILD_TYPE=RelWithDebInfo -DNCVIEW_STATIC_LINK=ON
 cmake --build build-static -j
-ldd build-static/app/ncview   # confirm netcdf/hdf5 are no longer listed
+ldd build-static/app/ncview++   # confirm netcdf/hdf5 are no longer listed
 ```
 
 ## Releasing

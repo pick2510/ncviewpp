@@ -66,5 +66,6 @@ target_compile_definitions(ncview_core PRIVATE
 # ncview.cc's init_display_interface() searches this directory in addition to
 # $NCVIEWBASE/$HOME and ".", exactly like upstream's NCVIEW_LIB_DIR.
 target_compile_definitions(ncview_core PRIVATE
-    NCVIEW_LIB_DIR="${CMAKE_INSTALL_FULL_DATADIR}/ncview/colormaps"
+    NCVIEW_LIB_DIR="${CMAKE_INSTALL_FULL_DATADIR}/ncview++/colormaps"
+    NCVIEWPP_VERSION="${PROJECT_VERSION}"
 )

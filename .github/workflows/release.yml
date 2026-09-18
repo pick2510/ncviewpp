@@ -1,6 +1,6 @@
 name: Release
 
-# Builds ncview for Linux, macOS, and Windows (same steps as CI, via the
+# Builds ncview++ for Linux, macOS, and Windows (same steps as CI, via the
 # shared build.yml reusable workflow) and publishes the three packaged
 # archives to a GitHub Release.
 #

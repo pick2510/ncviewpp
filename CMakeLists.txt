@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)  # install(RUNTIME_DEPENDENCY_SET ...) below needs 3.21+
-project(ncview LANGUAGES C CXX)
+project(ncviewpp VERSION 0.3.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -450,8 +450,8 @@ install(TARGETS ncview
     RUNTIME_DEPENDENCY_SET ncview_runtime_deps
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
-install(DIRECTORY data/colormaps/ DESTINATION ${CMAKE_INSTALL_DATADIR}/ncview/colormaps)
-install(FILES data/ncview.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
+install(DIRECTORY data/colormaps/ DESTINATION ${CMAKE_INSTALL_DATADIR}/ncview++/colormaps)
+install(FILES "data/ncview++.1" DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
 
 # Bundle every non-system shared library ncview actually needs at runtime
 # (netCDF, HDF5, X11, curl, ...) next to the binary, so a packaged archive
@@ -535,8 +535,10 @@ endif()
 # --------------------------------------------------------------------------
 # CPack (source/binary tarball)
 # --------------------------------------------------------------------------
-set(CPACK_PACKAGE_NAME "ncview")
-set(CPACK_PACKAGE_VERSION "0.3.0")
+# "ncviewpp", not "ncview++": the name ends up in release-asset URLs, and
+# GitHub rewrites special characters in asset file names.
+set(CPACK_PACKAGE_NAME "ncviewpp")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "A visual netCDF file browser (C++/FLTK port)")
 # ZIP on Windows (no tar/gzip on a bare runner, and it's the platform-native
 # archive format there); TGZ everywhere else.

@@ -17,6 +17,7 @@ target_link_libraries(ncview PRIVATE
     ncview_ui ncview_core
     ncview_warning_flags ncview_sanitize_flags
 )
+set_target_properties(ncview PROPERTIES OUTPUT_NAME "ncview++")
 
 if(NCVIEW_STATIC_LINK)
     # The single most common reason a binary built on one machine won't run

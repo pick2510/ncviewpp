@@ -13,6 +13,15 @@ the short version.
   alongside the other built-in colormaps.
 
 ### Changed
+- Renamed the project to **Ncview++**. The command is now `ncview++`, and
+  colormaps and the man page install as `share/ncview++/colormaps` and
+  `ncview++.1`, so it can be installed alongside the original `ncview`.
+  Release archives and CI artifacts are named `ncviewpp-*`, since GitHub
+  rewrites `+` in release asset names. Settings (`~/.ncviewrc`) and
+  `$NCVIEWBASE` are unchanged and still shared with the original ncview.
+- Variables are now picked from a searchable list (filter box, long
+  names and units) instead of a drop-down menu. Long menus couldn't be
+  scrolled on Wayland and closed immediately.
 - `core/`'s previously-independent 5 global variables (`options`,
   `variables`, `pixel_transform`, `framestore`, `view`) are now all
   facets of one object, `ViewerSession` -- see `PORTING.md`'s
@@ -28,6 +37,8 @@ the short version.
   the submodule's own copies, and `.gitignore`'d.
 
 ### Fixed
+- The colorbar's tick labels weren't fully redrawn after switching
+  variables, leaving stale numbers from the previous variable on screen.
 - Two memory leaks in variable-switching, found as a side effect of the
   `OOP_redesign` ownership work above: `set_scan_variable()`'s
   early-return path and `invalidate_variable()` both used to

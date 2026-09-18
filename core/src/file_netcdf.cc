@@ -340,7 +340,7 @@ Stringlist *netcdf_scannable_dims( int fileid, char *var_name )
 	for( i=0; i<n_dims; i++ ) {
 		err = nc_inq_dim( gid, *(dim+i), dim_name, &dim_size );
 		if( err < 0 ) {
-			fprintf( stderr, "ncview: netcdf_scannable_dims: ");
+			fprintf( stderr, "ncview++: netcdf_scannable_dims: ");
 			fprintf( stderr, "error on nc_inq_dim call\n" );
 			fprintf( stderr, "fileid=%d, variable name=%s\n",
 					fileid, var_name );
@@ -491,7 +491,7 @@ std::string netcdf_dim_id_to_name( int fileid, std::string_view var_name, int di
 	err    = nc_inq_var( gid, netcdf_var_id, var_name_ng, &var_type,
 				&n_dims, dim.data(), &n_atts );
 	if( err != NC_NOERR ) {
-		fprintf( stderr, "ncview: netcdf_dim_id_to_name: error on ");
+		fprintf( stderr, "ncview++: netcdf_dim_id_to_name: error on ");
 		fprintf( stderr, "nc_inq_var call.  Variable=%s\n", var_name_s.c_str() );
 		exit( -1 );
 		}
@@ -499,7 +499,7 @@ std::string netcdf_dim_id_to_name( int fileid, std::string_view var_name, int di
 	netcdf_dim_id = dim[dim_id];
 	err      = nc_inq_dimname( gid, netcdf_dim_id, dim_name );
 	if( err != NC_NOERR ) {
-		fprintf( stderr, "ncview: netcdf_dim_id_to_name: error on ");
+		fprintf( stderr, "ncview++: netcdf_dim_id_to_name: error on ");
 		fprintf( stderr, "nc_inq_dimname call.  Variable=%s\n", var_name_s.c_str() );
 		exit( -1 );
 		}
@@ -599,7 +599,7 @@ int netcdf_dim_name_to_id( int fileid, char *var_name, char *dim_name )
 	if( err != NC_NOERR ) {
 		/* Phase 12e: was exit(-1) -- see the identical reasoning above,
 		 * at this function's other exit() site. */
-		fprintf( stderr, "ncview: netcdf_dim_name_to_id: error on ");
+		fprintf( stderr, "ncview++: netcdf_dim_name_to_id: error on ");
 		fprintf( stderr, "nc_inq_var call.  Variable %s, Dimension %s\n",
 					var_name, dim_name );
 		in_error( "Failed to query dimension information for this variable." );
@@ -991,7 +991,7 @@ std::string netcdf_title( int fileid )
 
 	err = nc_inq_att( fileid, NC_GLOBAL, "title", &type, &title_len );
 	if( type != NC_CHAR ) {
-		fprintf( stderr, "ncview: netcdf_title: internal error in the " );
+		fprintf( stderr, "ncview++: netcdf_title: internal error in the " );
 		fprintf( stderr, "format of the netCDF input file; title\n" );
 		fprintf( stderr, "not in character format!  Setting title to NULL.\n" );
 		return( std::string() );
@@ -1424,7 +1424,7 @@ nc_type netcdf_dim_value( int fileid, char *dim_name, size_t place,
 				 * one -- degrade like the default: case below rather
 				 * than aborting the whole process over it.
 				 */
-				fprintf( stderr, "ncview: netcdf_dim_value: unsupported rank (%d) for character dimension variable %s; using virtual place\n",
+				fprintf( stderr, "ncview++: netcdf_dim_value: unsupported rank (%d) for character dimension variable %s; using virtual place\n",
 					n_dims, dim_name );
 				*ret_val_double = (double)virt_place;
 				ret_type = NC_DOUBLE;
@@ -1455,7 +1455,7 @@ nc_type netcdf_dim_value( int fileid, char *dim_name, size_t place,
 				 * corrupt one -- degrade like the default: case below
 				 * rather than aborting the whole process over it.
 				 */
-				fprintf( stderr, "ncview: netcdf_dim_value: unsupported rank (%d) for numeric dimension variable %s; using virtual place\n",
+				fprintf( stderr, "ncview++: netcdf_dim_value: unsupported rank (%d) for numeric dimension variable %s; using virtual place\n",
 					n_dims, dim_name );
 				*ret_val_double = (double)virt_place;
 				ret_type = NC_DOUBLE;
@@ -1551,7 +1551,7 @@ nc_type netcdf_dim_value( int fileid, char *dim_name, size_t place,
 			break;
 
 		default:
-			fprintf( stderr, "ncview: netcdf_dim_value: " );
+			fprintf( stderr, "ncview++: netcdf_dim_value: " );
 			fprintf( stderr, "unknown data type (%d) for\n", type );
 			fprintf( stderr, "dimension %s\n", dim_name );
 			*ret_val_double = (double)virt_place;

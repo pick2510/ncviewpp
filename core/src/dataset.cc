@@ -463,7 +463,7 @@ void Dataset::addVariable( const char *var_name, int file_id, const char *filena
 			printf( "adding another file with variable %s in it\n",
 				var_name );
 		if( var->files.empty() ) {
-			fprintf( stderr, "ncview: add_var_to_list: internal ");
+			fprintf( stderr, "ncview++: add_var_to_list: internal ");
 			fprintf( stderr, "inconsistency; var has no last_file\n" );
 			exit( -1 );
 			}

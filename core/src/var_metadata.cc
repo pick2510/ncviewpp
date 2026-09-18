@@ -80,7 +80,7 @@ virt_to_actual_place( NCVar *var, size_t *virt_pl, size_t *act_pl, FDBlist **fil
 	v_place = *(virt_pl);
 
 	if( v_place >= var->size[0] ) {
-		fprintf( stderr, "ncview: virt_to_actual_place: error trying ");
+		fprintf( stderr, "ncview++: virt_to_actual_place: error trying ");
 		fprintf( stderr, "to convert the following virtual place to\n" );
 		fprintf( stderr, "an actual place for variable %s:\n", var->name.c_str() );
 		for( i=0; i<n_dims; i++ )

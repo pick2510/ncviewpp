@@ -409,7 +409,7 @@ View::expandData( float *big_data, size_t array_size )
 	fill_val = v->variable->fill_value;
 
 	if( (nxb < (size_t)blowup) || (nxb*nyb < (size_t)blowup) ) {
-		fprintf( stderr, "ncview: data_to_pixels: too much magnification\n" );
+		fprintf( stderr, "ncview++: data_to_pixels: too much magnification\n" );
 		fprintf( stderr, "nxb=%zu\n", nxb );
 		exit( -1 );
 		}

@@ -376,7 +376,7 @@ MainWindow *instance()
 MainWindow::MainWindow()
 {
 	const int W = 900, H = 760;
-	win_ = new NcviewWindow( W, H, "ncview" );
+	win_ = new NcviewWindow( W, H, "Ncview++" );
 
 	// Fl_Sys_Menu_Bar: on macOS this becomes the native system menu bar at
 	// the top of the screen (a documented drop-in replacement for

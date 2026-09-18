@@ -197,7 +197,7 @@ void fmt_time( char *temp_string, size_t temp_string_len, double new_dimval, NCD
 	int 	year, month, day;
 
 	if( ! dim->timelike ) {
-		fprintf( stderr, "ncview: internal error: fmt_time called on non-timelike axis!\n");
+		fprintf( stderr, "ncview++: internal error: fmt_time called on non-timelike axis!\n");
 		fprintf( stderr, "dim name: %s\n", dim->name.c_str() );
 		exit( -1 );
 		}

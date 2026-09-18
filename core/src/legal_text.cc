@@ -38,7 +38,7 @@
 useage()
 {
 fprintf( stderr, "\nuseage:\n" );
-fprintf( stderr, "ncview [options] datafiles\n" );
+fprintf( stderr, "ncview++ [options] datafiles\n" );
 fprintf( stderr, "\n" );
 fprintf( stderr, "Options\n" );
 fprintf( stderr, "	-minmax: selects how rapidly minimum and maximum\n" );
@@ -87,10 +87,10 @@ exit( -1 );
 print_no_warranty()
 {
 printf( "\n The program `ncview' is Copyright (C) 1993 through 2024 David W. Pierce, and\n" );
-printf( "this C++/FLTK port is Copyright (C) 2026 Dominik Strebel. Both are\n" );
+printf( "its C++/FLTK port `ncview++' is Copyright (C) 2026 Dominik Strebel. Both are\n" );
 printf( "subject to the terms and conditions of the Gnu General Public License,\n" );
-printf( "Version 3. For information on copying, modifying, or distributing `ncview',\n" );
-printf( "type `ncview -c'.\n" );
+printf( "Version 3. For information on copying, modifying, or distributing `ncview++',\n" );
+printf( "type `ncview++ -c'.\n" );
 printf( "\n" );
 printf( "  This License Agreement applies to any program or other work which \n" );
 printf( "contains a notice placed by the copyright holder saying it may be \n" );
@@ -128,10 +128,10 @@ printf( "POSSIBILITY OF SUCH DAMAGES.\n" );
 print_copying()
 {
 printf( "  The program `ncview' is Copyright (C) 1993 through 2024, David W. Pierce, and \n" );
-printf( "this C++/FLTK port is Copyright (C) 2026 Dominik Strebel. Both are subject\n" );
+printf( "its C++/FLTK port `ncview++' is Copyright (C) 2026 Dominik Strebel. Both are subject\n" );
 printf( "to the terms and conditions of the Gnu General Public License,\n" );
-printf( "Version 3.  Ncview comes with NO WARRANTY; for further information, type\n" );
-printf( "`ncview -w'.\n" );
+printf( "Version 3.  Ncview++ comes with NO WARRANTY; for further information, type\n" );
+printf( "`ncview++ -w'.\n" );
 printf( "\n" );
 printf( "GNU GENERAL PUBLIC LICENSE\n" );
 printf( "\n" );

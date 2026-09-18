@@ -389,7 +389,7 @@ in_variable_selected( const char *var_name )
 	NCVar	*var;
 
 	if( (var = g_app.session.dataset().findVariable( var_name )) == NULL ) {
-		fprintf( stderr, "ncview: in_variable_selected: internal error " );
+		fprintf( stderr, "ncview++: in_variable_selected: internal error " );
 		fprintf( stderr, "no variable with name >%s< found on variable list\n",
 					var_name );
 		exit( -1 );
@@ -481,7 +481,7 @@ View::scanToPlace( size_t scan_place )
 
 	size = view->variable->size[view->scan_axis_id];
 	if( scan_place >= size ) {
-		fprintf( stderr, "ncview: set_scan_view: internal error; trying to " );
+		fprintf( stderr, "ncview++: set_scan_view: internal error; trying to " );
 		fprintf( stderr, "set to a place larger than exists\n" );
 		fprintf( stderr, "size: %zu   attempted place: %zu\n", size, scan_place+1 );
 		fprintf( stderr, "resetting to zero\n" );
@@ -1688,7 +1688,7 @@ set_buttons( int to_state, ViewerUi &ui )
 		break;
 
 	default:
-		fprintf( stderr, "ncview: set_buttons: unknown to_state: %d\n",
+		fprintf( stderr, "ncview++: set_buttons: unknown to_state: %d\n",
 			to_state );
 		break;
 	}
@@ -2881,7 +2881,7 @@ view_change_transform( int delta, ViewerUi &ui )
 		case Transform::Hi     : ui.in_set_label( Label::Transform, "Hi"     ); break;
 		case Transform::Center : ui.in_set_label( Label::Transform, "Center" ); break;
 		default:
-			fprintf( stderr, "ncview: change_transform: unknown transform %d\n",
+			fprintf( stderr, "ncview++: change_transform: unknown transform %d\n",
 				transform_int );
 			exit( -1 );
 		}

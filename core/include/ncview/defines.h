@@ -52,7 +52,10 @@
 
 #define PROGRAM_ID		"Ncview 2.1.11 David W. Pierce 7 November 2024"
 #define PROGRAM_VERSION_STRING	"2.1.11"
-#define PROGRAM_GUI_LABEL	PROGRAM_ID " -- C++/FLTK port (C) 2026 Dominik Strebel"
+#ifndef NCVIEWPP_VERSION
+#define NCVIEWPP_VERSION	"unknown"
+#endif
+#define PROGRAM_GUI_LABEL	"Ncview++ " NCVIEWPP_VERSION " (C) 2026 Dominik Strebel -- based on " PROGRAM_ID
 constexpr double APP_RES_VERSION = 1.93;
 
 /******************** Buttons in the user interface **********************/

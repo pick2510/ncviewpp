@@ -1,6 +1,6 @@
 name: Build
 
-# Reusable workflow: builds, tests, and packages ncview for Linux, macOS, and
+# Reusable workflow: builds, tests, and packages ncview++ for Linux, macOS, and
 # Windows. Called by ci.yml (on every push/PR) and release.yml (on a version
 # tag) so the two never drift apart -- a release is built by the exact same
 # steps CI already verified.
@@ -109,8 +109,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ncview-linux
-          path: build/ncview-*.tar.gz
+          name: ncviewpp-linux
+          path: build/ncviewpp-*.tar.gz
 
   macos:
     runs-on: macos-latest
@@ -153,8 +153,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ncview-macos
-          path: build/ncview-*.tar.gz
+          name: ncviewpp-macos
+          path: build/ncviewpp-*.tar.gz
 
   windows:
     runs-on: windows-latest
@@ -213,8 +213,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ncview-windows
-          path: build/ncview-*.zip
+          name: ncviewpp-windows
+          path: build/ncviewpp-*.zip
 
   # modernization.md Phase 0d / PORTING.md's own verification step 5 ("Leak/
   # UB pass -- the mechanical C->C++ conversion of 14k lines is exactly
@@ -434,20 +434,20 @@ jobs:
             -DNCVIEW_STATIC_LINK=ON
           cmake --build build --target ncview -j"$(nproc)"
 
-          patchelf --print-needed build/app/ncview
-          ! patchelf --print-needed build/app/ncview | grep -qiE "netcdf|hdf5|^libsz|libaec|zstd|Xinerama|Xcursor"
+          patchelf --print-needed build/app/ncview++
+          ! patchelf --print-needed build/app/ncview++ | grep -qiE "netcdf|hdf5|^libsz|libaec|zstd|Xinerama|Xcursor"
 
           # Read the version out of CMakeLists.txt rather than hardcoding it
           # here a second time -- this job packages by hand (a manual tar,
           # not CPack, since it builds inside a throwaway ubuntu:18.04
           # container) so nothing else keeps this name in sync automatically.
-          ncview_version="$(sed -n '"'"'s/^set(CPACK_PACKAGE_VERSION "\(.*\)")$/\1/p'"'"' CMakeLists.txt)"
-          archive_name="ncview-${ncview_version}-Linux-static-x86_64.tar.gz"
-          tar -C build/app -czf "/repo/$archive_name" ncview
+          ncview_version="$(sed -n '"'"'s/^project(ncviewpp VERSION \([0-9.]*\) .*/\1/p'"'"' CMakeLists.txt)"
+          archive_name="ncviewpp-${ncview_version}-Linux-static-x86_64.tar.gz"
+          tar -C build/app -czf "/repo/$archive_name" ncview++
           chown "$(stat -c '"'"'%u:%g'"'"' /repo)" "/repo/$archive_name"
           '
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ncview-linux-static
-          path: ncview-*-Linux-static-x86_64.tar.gz
+          name: ncviewpp-linux-static
+          path: ncviewpp-*-Linux-static-x86_64.tar.gz

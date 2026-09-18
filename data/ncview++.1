@@ -1,16 +1,16 @@
-.TH NCVIEW 1 local
+.TH NCVIEW++ 1 local
 .SH NAME
-ncview \- graphically display netCDF files under X windows
+ncview++ \- graphically display netCDF files
 .PP
-(This is the C++/FLTK port of ncview -- the command-line interface and
-on-screen behavior described below are unchanged from the original
-Xt/Athena-widgets ncview.)
+(Ncview++ is a C++/FLTK port of David W. Pierce's ncview -- the
+command-line interface and on-screen behavior described below are
+unchanged from the original Xt/Athena-widgets ncview.)
 .SH SYNOPSIS
-.B ncview
+.B ncview++
 [-beep] [-copying] [-frames] [-warranty] [-private] [-ncolors XX] [-extrainfo] [-mtitle "title"] [-minmax fast | med | slow | all] [-maxsize PCT -or- WIDTH,HEIGHT] datafiles ...
 .PP
 .SH DESCRIPTION
-.I Ncview
+.I Ncview++
 displays 2-D slices of a netCDF data file, using the X Window System
 graphical user interface (Release 4 or higher).
 You can examine different floating point variables in the file, and animate
@@ -20,7 +20,7 @@ You can also display 1-D (line plot) views of the data simply by
 clicking the mouse on the point of interest.
 .PP
 When you first invoke 
-.I ncview,
+.I ncview++,
 a command panel comes up which has a number of buttons
 for manipulating the current view into the data file,
 and presenting various information about the current view.
@@ -37,7 +37,7 @@ Next comes a row of buttons similar to a tape recorder,
 used for changing the view into the netCDF file
 along the scan dimension.
 In Version 1.XX of 
-.I ncview,
+.I ncview++,
 the scan dimension is constrained to be the ``record dimension''
 (in netCDF parlance).
 From the left, the buttons are: the quit button; a button
@@ -65,7 +65,7 @@ Next comes "Set Dim"; pressing this pops up a window which
 allows you to determine which variables are shown on the X
 and Y axes.
 Note that Version 1.XX of
-.I ncview
+.I ncview++
 will 
 .I not
 transpose your data!
@@ -81,7 +81,7 @@ transposition of data.
 In general you don't have to worry about this issue much,
 because if you attempt to pick axes which would be transposing
 the data, 
-.I ncview
+.I ncview++
 switches them (and tells you that it's doing so!) so you can
 get the axes you want.
 Note that there is never any ambiguity about which dimensions are being  
@@ -102,7 +102,7 @@ and is somewhat faster.
 The next row of buttons shows what 
 variables can be displayed from the input files.
 Note that when 
-.I ncview
+.I ncview++
 first comes up, if there is more than one variable
 in the file, you must select a variable to display before 
 you will see anything.
@@ -151,20 +151,20 @@ At the moment, panels are automatically unlocked when you choose
 a new variable.
 .PP
 .SH UDUNITS SUPPORT
-.I ncview 
+.I ncview++ 
 supports time axes that use the conventions 
 in the udunits package.  Typical units names in this
 scheme would be "days since 1990-01-01".  If 
-.I ncview
+.I ncview++
 encounters a time dimension that it understands in
 this way, then it displays the calendar date (as
-calculated by the udunits package, not ncview)
+calculated by the udunits package, not ncview++)
 rathar than the actual axis value.  For instance,
 it might display "3_Jun_1995" rather than "Day 2390".
 To have this functionality, the udunits package
 must be able to find the "udunits.dat" file.
 You must set the environmental variable UDUNITS_PATH to
-the location of this file for ncview to be able
+the location of this file for ncview++ to be able
 to find it.
 .PP
 .SH MODIFIERS
@@ -183,18 +183,18 @@ When holding down the control key while clicking on the
 magnification button, the magnification DOUBLES or HALVES
 instead of incrementing or decrementing by one.
 .PP
-.I Ncview
+.I Ncview++
 attempts to save the displayed images in main memory,
 with each frame being saved as it is calculated for the
 first time.
 This speeds up looping replays of the same data.
 If there is not enough memory to store all the required
 frames at the selected magnification, 
-.I ncview
+.I ncview++
 will inform you and automatically stop trying to do 
 so.
 Changing the magnification will again force 
-.I ncview
+.I ncview++
 to try and allocate a image buffer.
 .PP
 Since the scaled, interpolated pixel maps are stored, the following
@@ -208,7 +208,7 @@ Changing colormaps does not require refilling the image
 buffer.
 .PP
 You can invoke
-.I ncview
+.I ncview++
 with multiple netCDF filenames on the command line, and
 it will try to present the data in a logical way; i.e.,
 if there are identically named variables in the data files,
@@ -218,7 +218,7 @@ If there are different variables in different files, it
 will let you choose to display any of the available variables.
 This is generally a Good Thing, but if you have identically
 named variables in different files with different attributes,
-.I ncview
+.I ncview++
 will not know which attribute you want to use and most
 likely will crash.
 .PP
@@ -251,10 +251,10 @@ This is useful for photographing the computer screen to
 make slides or pictures of the data.
 .PP
 .I -frames:
-This will make ncview dump out the frames it displays
+This will make ncview++ dump out the frames it displays
 in a series of PPM-format files.
 You can then make them into an mpeg movie if you so desire
-(using tools other than ncview).
+(using tools other than ncview++).
 .PP
 .I -mtitle:
 Puts the following argument (enclosed in quotes) up
@@ -307,26 +307,26 @@ height of 600 pixels.
 .PP
 .I -copying:
 prints out the terms under which 
-.I ncview
+.I ncview++
 may be copied, distributed, and modified.
-.I Ncview
+.I Ncview++
 is covered under the provisions of the Gnu General 
 Public Liicense Version 1.
 .PP
 .I -warranty:
-.I Ncview
+.I Ncview++
 comes with no warranty; this option prints out a
 fuller statement to this effect.
 .SH ENVIRONMENT
-.I Ncview
-looks in directory /home/pierce/lib/ncview for system-wide
+.I Ncview++
+looks in the installation's share/ncview++/colormaps directory for system-wide
 colormap (.ncmap) files.
 It also examines the user's environmental variable NCVIEWBASE for
 the name of a directory which contains additional colormap
 files.
 If that is not defined, then colormaps are sought in
 the user's home directory, and in the directory which
-.i ncview
+.i ncview++
 was run from.
 
 Colormap files have 256 lines, each consisting of
@@ -336,7 +336,7 @@ There should be only whitespace separating the
 r, g, and b values on each line.
 Colormap files end with the extension ".ncmap".
 If
-.I Ncview
+.I Ncview++
 does not find any colormaps, it will complain, and
 supply a simple default map.
 .PP
