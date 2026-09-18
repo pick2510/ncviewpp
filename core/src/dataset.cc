@@ -1,7 +1,8 @@
 /*
  * core/src/dataset.cc
  *
- * Copyright (C) 2026 Dominik Strebel
+ * Copyright (C) 1993 through 2024 David W. Pierce
+ * Modifications Copyright (C) 2026 Dominik Strebel
  *
  * See ncview/dataset.h. OOP_redesign plan, Step 5.
  */

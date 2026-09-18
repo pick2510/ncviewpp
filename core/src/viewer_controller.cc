@@ -1,7 +1,8 @@
 /*
  * core/src/viewer_controller.cc
  *
- * Copyright (C) 2026 Dominik Strebel
+ * Copyright (C) 1993 through 2024 David W. Pierce
+ * Modifications Copyright (C) 2026 Dominik Strebel
  *
  * See ncview/viewer_controller.h. Bodies moved verbatim from do_buttons.cc's
  * do_*() functions (OOP_redesign plan, Step 7) -- cur_button is now a

@@ -8,8 +8,8 @@
 
     Version 1.2, released 8 June 2014
 
-    Copyright (C) 2026 Dominik Strebel
     Copyright (C) 2010-2024, David W. Pierce, davidwilliampierce@gmail.com
+    Modifications Copyright (C) 2026 Dominik Strebel
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by

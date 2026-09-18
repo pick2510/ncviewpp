@@ -1,7 +1,7 @@
 /*
  * Ncview by David W. Pierce.  A visual netCDF file viewer.
- * Copyright (C) 2026 Dominik Strebel
  * Copyright (C) 1993 through 2024 by David W. Pierce
+ * Modifications Copyright (C) 2026 Dominik Strebel
  *
  * This program  is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 3 as 
@@ -52,6 +52,7 @@
 
 #define PROGRAM_ID		"Ncview 2.1.11 David W. Pierce 7 November 2024"
 #define PROGRAM_VERSION_STRING	"2.1.11"
+#define PROGRAM_GUI_LABEL	PROGRAM_ID " -- C++/FLTK port (C) 2026 Dominik Strebel"
 constexpr double APP_RES_VERSION = 1.93;
 
 /******************** Buttons in the user interface **********************/

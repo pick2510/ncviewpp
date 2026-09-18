@@ -7,6 +7,7 @@
 #include "ncview_ui/main_window.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -15,8 +16,12 @@
 #include <FL/Fl.H>
 #include <FL/fl_draw.H>
 #include <FL/names.h>
+#include <FL/Fl_Button.H>
 #include <FL/Fl_Choice.H>
+#include <FL/Fl_Double_Window.H>
+#include <FL/Fl_Hold_Browser.H>
 #include <FL/Fl_Hor_Slider.H>
+#include <FL/Fl_Return_Button.H>
 #include <FL/Fl_Input.H>
 #include <FL/Fl_Multi_Label.H>
 
@@ -296,6 +301,9 @@ void Colorbar::setRange( float user_min, float user_max, Transform transform )
 	user_max_ = user_max;
 	transform_ = transform;
 	redraw();
+	// draw() puts the tick labels just below the widget's own box, which
+	// redraw() alone doesn't repaint -- stale labels stayed on screen.
+	if( parent() ) parent()->damage( FL_DAMAGE_ALL, x(), y()+h(), w(), 18 );
 }
 
 void Colorbar::draw()
@@ -871,6 +879,184 @@ std::string escapeMenuLabel( const char *name )
 // column, so each Fl_Choice needs its own explicit width rather than
 // var_pack_->w() (which would size every dropdown to the *entire* row).
 constexpr int kVarChoiceW = 180;
+
+bool containsNoCase( const std::string &hay, const std::string &needle )
+{
+	auto it = std::search( hay.begin(), hay.end(), needle.begin(), needle.end(),
+		[]( char a, char b ) { return std::tolower( (unsigned char)a ) == std::tolower( (unsigned char)b ); } );
+	return it != hay.end();
+}
+
+// Up/Down in the filter box move the list's selection, so the picker can be
+// driven entirely from the keyboard: type, arrow, Enter.
+class PickerFilterInput : public Fl_Input {
+public:
+	PickerFilterInput( int X, int Y, int W, int H, const char *L ) : Fl_Input( X, Y, W, H, L ) {}
+	Fl_Hold_Browser *list = nullptr;
+	int handle( int e ) override
+	{
+		if( e == FL_KEYBOARD && list && list->size() > 0 ) {
+			int k = Fl::event_key();
+			if( k == FL_Up || k == FL_Down || k == FL_Page_Up || k == FL_Page_Down ) {
+				int step = ( k == FL_Page_Up || k == FL_Page_Down ) ? 15 : 1;
+				int dir = ( k == FL_Up || k == FL_Page_Up ) ? -1 : 1;
+				int v = std::clamp( list->value() + dir*step, 1, list->size() );
+				list->value( v );
+				list->make_visible( v );
+				return 1;
+			}
+		}
+		return Fl_Input::handle( e );
+	}
+};
+
+struct VarPickerEntry {
+	int item_index;            // index into the bucket combo's menu()
+	std::string name, detail;  // detail: "long_name [units]"
+};
+
+struct VarPickerState {
+	std::vector<VarPickerEntry> entries;
+	PickerFilterInput *filter = nullptr;
+	Fl_Hold_Browser *list = nullptr;
+	int chosen = -1;           // menu item index, -1 if cancelled
+};
+
+// Fl_Browser interprets '@' at the start of a column as a format code;
+// "@." turns that off for the rest of the column.
+std::string browserLine( const VarPickerEntry &e )
+{
+	return "@." + e.name + "\t@." + e.detail;
+}
+
+void refillPickerList( VarPickerState *st, const char *keep_name )
+{
+	std::string f = st->filter->value();
+	st->list->clear();
+	int select = 0;
+	for( size_t i = 0; i < st->entries.size(); i++ ) {
+		const auto &e = st->entries[i];
+		if( !f.empty() && !containsNoCase( e.name, f ) && !containsNoCase( e.detail, f ) ) continue;
+		st->list->add( browserLine( e ).c_str(), (void *)(intptr_t)i );
+		if( keep_name && e.name == keep_name ) select = st->list->size();
+	}
+	if( st->list->size() > 0 ) {
+		if( select == 0 ) select = 1;
+		st->list->value( select );
+		st->list->middleline( select );
+	}
+}
+
+void acceptPicker( VarPickerState *st )
+{
+	int line = st->list->value();
+	if( line <= 0 ) return;
+	st->chosen = st->entries[(size_t)(intptr_t)st->list->data( line )].item_index;
+	st->list->window()->hide();
+}
+
+// A variable-bucket combo that opens a filterable, scrollable picker
+// window instead of its drop-down menu. A popup menu taller than the screen
+// is unusable on FLTK's Wayland backend (GNOME/mutter dismisses it the
+// moment FLTK tries to scroll it), and a WRF file easily has 100+ vars in
+// one bucket. The menu items are still kept: they drive the combo's
+// displayed label, indicateActiveVar(), and the per-item callback.
+class VarPickerChoice : public Fl_Choice {
+public:
+	VarPickerChoice( int X, int Y, int W, int H ) : Fl_Choice( X, Y, W, H ) {}
+	int handle( int e ) override
+	{
+		if( !active_r() ) return Fl_Choice::handle( e );
+		if( e == FL_PUSH && Fl::event_button() == FL_LEFT_MOUSE ) {
+			if( Fl::visible_focus() ) Fl::focus( this );
+			openPicker();
+			return 1;
+		}
+		if( e == FL_KEYBOARD && Fl::focus() == this ) {
+			int k = Fl::event_key();
+			if( k == ' ' || k == FL_Enter || k == FL_KP_Enter || k == FL_Down ) {
+				openPicker();
+				return 1;
+			}
+		}
+		return Fl_Choice::handle( e );
+	}
+
+private:
+	void openPicker()
+	{
+		VarPickerState st;
+		const Fl_Menu_Item *items = menu();
+		for( int i = 0; items[i].text != nullptr; i++ ) {
+			const char *nm = (const char *)items[i].user_data();
+			if( nm == nullptr ) continue;
+			VarPickerEntry e{ i, nm, "" };
+			if( NCVar *v = g_app.session.dataset().findVariable( nm ); v && !v->files.empty() ) {
+				e.detail = v->files.front()->file->longVarName( nm );
+				std::string units = v->files.front()->file->varUnits( nm );
+				if( !units.empty() ) e.detail += ( e.detail.empty() ? "[" : "  [" ) + units + "]";
+			}
+			st.entries.push_back( std::move( e ) );
+		}
+		if( st.entries.empty() ) return;
+
+		const int W = 700, H = 460;
+		std::string title = std::string( "Select variable: " ) + ( items[0].text ? items[0].text : "" );
+		Fl_Double_Window win( W, H );
+		win.copy_label( title.c_str() );
+
+		PickerFilterInput filter( 60, 10, W-70, 25, "Filter:" );
+		Fl_Hold_Browser list( 10, 45, W-20, H-95 );
+		static int col_w[] = { 150, 0 };
+		list.column_widths( col_w );
+		list.column_char( '\t' );
+		Fl_Return_Button ok( W-180, H-40, 80, 30, "OK" );
+		Fl_Button cancel( W-90, H-40, 80, 30, "Cancel" );
+		win.end();
+		win.resizable( &list );
+		win.size_range( 360, 200 );
+
+		filter.list = &list;
+		st.filter = &filter;
+		st.list = &list;
+
+		filter.when( FL_WHEN_CHANGED );
+		filter.callback( []( Fl_Widget *, void *d ) {
+			auto *s = static_cast<VarPickerState*>( d );
+			int line = s->list->value();
+			const char *keep = nullptr;
+			std::string keep_s;
+			if( line > 0 ) { keep_s = s->entries[(size_t)(intptr_t)s->list->data( line )].name; keep = keep_s.c_str(); }
+			refillPickerList( s, keep );
+		}, &st );
+		list.callback( []( Fl_Widget *, void *d ) {
+			if( Fl::event_clicks() > 0 ) acceptPicker( static_cast<VarPickerState*>( d ) );
+		}, &st );
+		ok.callback( []( Fl_Widget *, void *d ) { acceptPicker( static_cast<VarPickerState*>( d ) ); }, &st );
+		cancel.callback( []( Fl_Widget *w, void * ) { w->window()->hide(); } );
+
+		const Fl_Menu_Item *cur = mvalue();
+		refillPickerList( &st, ( cur && cur->user_data() ) ? (const char *)cur->user_data() : nullptr );
+
+		// Drop down from the combo like its menu would have (X11/Windows;
+		// Wayland compositors place toplevel windows themselves).
+		int ox = 0, oy = 0;
+		for( Fl_Window *w = window(); w; w = w->window() ) { ox += w->x(); oy += w->y(); if( !w->parent() ) break; }
+		int sx, sy, sw, sh;
+		Fl::screen_work_area( sx, sy, sw, sh, window() ? window()->screen_num() : 0 );
+		int px = std::clamp( ox + x(), sx, std::max( sx, sx + sw - W ) );
+		int py = oy + y() + h();
+		if( py + H > sy + sh ) py = std::max( sy, oy + y() - H );
+		win.position( px, py );
+
+		win.set_modal();
+		win.show();
+		Fl::focus( &filter );
+		while( win.shown() ) Fl::wait();
+
+		if( st.chosen >= 0 ) picked( &menu()[st.chosen] );
+	}
+};
 } // namespace
 
 void MainWindow::populateVarList()
@@ -895,7 +1081,7 @@ void MainWindow::populateVarList()
 	for( int i = 0; i < 5; i++ ) {
 		if( buckets[i].empty() ) continue;
 
-		auto *choice = new Fl_Choice( 0, 0, kVarChoiceW, 24 );
+		auto *choice = new VarPickerChoice( 0, 0, kVarChoiceW, 24 );
 		char header[64];
 		std::snprintf( header, sizeof(header), "(%zu) %s vars", buckets[i].size(), kBucketSuffix[i] );
 		choice->add( header, 0, nullptr, nullptr, FL_MENU_INACTIVE );
