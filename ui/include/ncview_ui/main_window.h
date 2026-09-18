@@ -295,7 +295,10 @@ private:
 	// Parallel to buttons_[], for the actions moved into menu_bar_ instead
 	// of staying toolbar buttons (see setSensitive(), which activates/
 	// deactivates whichever of the two a given Button id actually has).
-	Fl_Menu_Item      *menu_items_[32] = {};
+	// Index into menu_bar_->menu(), plus one so zero means "no menu item".
+	// Not an Fl_Menu_Item*: every add() may reallocate the menu array,
+	// leaving earlier pointers dangling.
+	int                menu_item_index_[32] = {};
 	// Purely decorative bordered boxes drawn behind the info rows above the
 	// colormap/transform/interpolation row (Title; ScanvarName; ScanPlace;
 	// DataExtrema+DataValue) -- one per row, each stretched to the window's

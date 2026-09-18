@@ -395,7 +395,7 @@ MainWindow::MainWindow()
 	// Max, which stay as buttons below.
 	auto add_menu_item = [this]( const char *path, Button id ) {
 		int idx = menu_bar_->add( path, 0, &MainWindow::buttonCallback, (void*)(intptr_t)static_cast<int>(id) );
-		menu_items_[static_cast<int>(id)] = const_cast<Fl_Menu_Item*>( menu_bar_->menu() + idx );
+		menu_item_index_[static_cast<int>(id)] = idx + 1;
 	};
 	add_menu_item( "File/Print...",              Button::Print );
 	add_menu_item( "File/Quit",                  Button::Quit );
@@ -1203,15 +1203,16 @@ void MainWindow::setSensitive( Button button_id, int state )
 	// last asked for.
 	button_insensitive_[idx] = ( state == 0 );
 	// A given Button id has either a toolbar button (buttons_) or a menu
-	// item (menu_items_), never both -- whichever one this id actually has
-	// gets (de)activated, the other slot is just null.
+	// item (menu_item_index_), never both -- whichever one this id actually
+	// has gets (de)activated, the other slot is just empty.
 	if( buttons_[idx] != nullptr ) {
 		if( state ) buttons_[idx]->activate();
 		else buttons_[idx]->deactivate();
 	}
-	if( menu_items_[idx] != nullptr ) {
-		if( state ) menu_items_[idx]->activate();
-		else menu_items_[idx]->deactivate();
+	if( menu_item_index_[idx] > 0 ) {
+		auto *item = const_cast<Fl_Menu_Item*>( menu_bar_->menu() + menu_item_index_[idx] - 1 );
+		if( state ) item->activate();
+		else item->deactivate();
 		// update() (a no-op on non-Mac builds -- see Fl_Menu_Bar::update())
 		// is what actually pushes an Fl_Menu_Item flag change like this one
 		// out to macOS's native system menu bar; redraw() alone only
