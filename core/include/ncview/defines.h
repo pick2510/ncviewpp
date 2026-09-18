@@ -55,7 +55,10 @@
 #ifndef NCVIEWPP_VERSION
 #define NCVIEWPP_VERSION	"unknown"
 #endif
-#define PROGRAM_GUI_LABEL	"Ncview++ " NCVIEWPP_VERSION " (C) 2026 Dominik Strebel -- based on " PROGRAM_ID
+/* No version number: the ui_smoke golden screenshots show this label, so a
+ * version in it would invalidate them on every release. The startup banner
+ * carries the version instead. */
+#define PROGRAM_GUI_LABEL	"Ncview++ (C) 2026 Dominik Strebel -- based on " PROGRAM_ID
 constexpr double APP_RES_VERSION = 1.93;
 
 /******************** Buttons in the user interface **********************/
