@@ -1,7 +1,7 @@
 # Changelog
 
-Notable changes to this project, condensed from `PORTING.md`,
-`modernization.md`, and the git history. Dates are release-tag dates.
+Notable changes to this project, condensed from `docs/PORTING.md`,
+`docs/modernization.md`, and the git history. Dates are release-tag dates.
 See those two files for full narrative detail and rationale; this is
 the short version.
 
@@ -24,7 +24,7 @@ the short version.
   scrolled on Wayland and closed immediately.
 - `core/`'s previously-independent 5 global variables (`options`,
   `variables`, `pixel_transform`, `framestore`, `view`) are now all
-  facets of one object, `ViewerSession` -- see `PORTING.md`'s
+  facets of one object, `ViewerSession` -- see `docs/PORTING.md`'s
   "OOP_redesign" section for the full nine-step migration. Also
   introduces `Dataset`, `ViewState`, `FrameCache`, `ViewerController`,
   and a `ViewerUi` virtual interface replacing the old free-function
@@ -98,7 +98,7 @@ and the UI layer (which came back clean):
 ### Docs
 - README: documented `flex`/`bison`/`texinfo` as build prerequisites for
   the vendored UDUNITS-2 build (always required, never previously listed).
-- `PORTING.md`/`modernization.md` updated to reflect the four post-release
+- `docs/PORTING.md`/`docs/modernization.md` updated to reflect the four post-release
   audit rounds and retire two stale claims (the `fill_dim_structs()`
   infinite loop and the file-open-chooser gap, both since fixed/closed).
 
@@ -157,7 +157,7 @@ Two external code-review passes covering `view.cc`, `file_netcdf.cc`,
 
 ## [0.2.0] - 2026-09-07
 
-The core C++17 modernization (`modernization.md`, Phases 0-9 + U1-U2) and
+The core C++17 modernization (`docs/modernization.md`, Phases 0-9 + U1-U2) and
 a large UI polish pass, both landed since 0.1.0.
 
 ### Core modernization
@@ -221,7 +221,7 @@ a large UI polish pass, both landed since 0.1.0.
 
 Initial release of this C++/FLTK/CMake port of upstream ncview 2.1.11
 (originally C + X11/Xt/Athena widgets, built with autotools). See
-`PORTING.md` for the full milestone-by-milestone history (M0-M6); in
+`docs/PORTING.md` for the full milestone-by-milestone history (M0-M6); in
 short:
 
 - `core/`: upstream's `src/*.c` ported to C++ (`ncview_core`), behind a
@@ -240,7 +240,7 @@ short:
 - Cross-platform from day one: Linux, macOS, and Windows, via CI-built
   packaged releases — upstream is X11/Unix-only.
 - Real bugs found and fixed during the port (each documented in
-  `PORTING.md`'s M5/M6 notes): printed/dumped pixels coming out black
+  `docs/PORTING.md`'s M5/M6 notes): printed/dumped pixels coming out black
   (a missing 8→16-bit colormap channel scale upstream's PostScript writer
   expected); a crash on any frame with a missing value when overlays were
   in use (`pixel_transform` never allocated outside the X11 colorcell path

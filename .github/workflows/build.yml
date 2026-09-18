@@ -66,7 +66,7 @@ jobs:
       # code that's never linked into ncview anyway.
       # -DNCVIEW_BUILD_UI_TESTS=ON: this job has Xvfb/ImageMagick/ncgen
       # installed above, so it's the one place tests/ui_smoke.sh (the
-      # Xvfb screenshot regression harness, modernization.md Phase 0c) can
+      # Xvfb screenshot regression harness, docs/modernization.md Phase 0c) can
       # actually run -- macOS/Windows jobs don't get this flag.
       - name: Configure
         run: >
@@ -216,7 +216,7 @@ jobs:
           name: ncviewpp-windows
           path: build/ncviewpp-*.zip
 
-  # modernization.md Phase 0d / PORTING.md's own verification step 5 ("Leak/
+  # docs/modernization.md Phase 0d / docs/PORTING.md's own verification step 5 ("Leak/
   # UB pass -- the mechanical C->C++ conversion of 14k lines is exactly
   # where this pays off"). Linux-only (ASan/UBSan support on the other two
   # platforms' toolchains here is less reliable, and one clean sanitizer
@@ -266,7 +266,7 @@ jobs:
   # Gate is "publish the report", not "fail below a threshold": a real
   # changed-lines-covered gate needs a diff-aware tool/action (e.g.
   # comparing against origin/master's own report) which is its own design
-  # task -- see PORTING.md's Phase 10 entry. Landing the measurement now
+  # task -- see docs/PORTING.md's Phase 10 entry. Landing the measurement now
   # rather than forcing a fragile line-count gate through in the same
   # phase.
   coverage:

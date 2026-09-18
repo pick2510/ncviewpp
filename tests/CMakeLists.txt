@@ -97,7 +97,7 @@ add_test(NAME ncview_core_tests COMMAND ncview_core_tests)
 # kills it with no indication of which test or why.
 set_tests_properties(ncview_core_tests PROPERTIES TIMEOUT 60)
 
-# modernization.md Phase 0c: end-to-end Xvfb screenshot regression test,
+# docs/modernization.md Phase 0c: end-to-end Xvfb screenshot regression test,
 # driving the real `ncview` binary (needs ncview_ui, so only buildable once
 # that target exists -- see the top-level CMakeLists.txt's add_subdirectory
 # order: core, ui, app, then tests). Off by default (NCVIEW_BUILD_UI_TESTS);

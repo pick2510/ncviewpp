@@ -2,7 +2,7 @@
 //
 // Unit tests for core/src/stringlist.cc -- the std::vector<StringlistEntry>
 // based string-list type used throughout core for variable/dimension name
-// lists (modernization.md Phase 3 replaced the original intrusive doubly-
+// lists (docs/modernization.md Phase 3 replaced the original intrusive doubly-
 // linked list with this container; see stringlist.h's own comment for why
 // most call sites still hold a `Stringlist *`).
 #include <cstdio>

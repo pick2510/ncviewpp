@@ -1,6 +1,6 @@
 # M1: core/*.cc is upstream src/*.c, mechanically ported to compile as C++.
 # No UI symbols reach this library; it talks to ncview_ui only through the
-# ncview/interface.h seam. See PORTING.md.
+# ncview/interface.h seam. See docs/PORTING.md.
 add_library(ncview_core STATIC
     src/calcalcs.cc
     src/dataset.cc
@@ -30,7 +30,7 @@ add_library(ncview_core STATIC
 )
 set_target_properties(ncview_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(ncview_core PRIVATE ncview_warning_flags ncview_sanitize_flags ncview_coverage_flags)
-# modernization.md Phase 9: core/WARNINGS.md is empty as of this phase, so
+# docs/modernization.md Phase 9: core/WARNINGS.md is empty as of this phase, so
 # -Werror is enabled here -- only for ncview_core, not ncview_ui/app/tests,
 # which haven't had the same warning sweep done on their own sources.
 if(MSVC)

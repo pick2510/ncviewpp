@@ -153,7 +153,7 @@ parse_options( int argc, char *argv[] )
 				/* Pre-existing quirk, preserved: this sets options.blowup (the
 				 * blowup magnitude), not options.blowup_type, even though the
 				 * value 1 here is BlowupType::Replicate's numeric value -- see
-				 * modernization.md's Phase 1 follow-up notes. */
+				 * docs/modernization.md's Phase 1 follow-up notes. */
 				options.blowup = 1;
 
 			else if( strncmp( argv[i], "-c", 2 ) == 0 ) {

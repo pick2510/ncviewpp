@@ -105,7 +105,7 @@ public:
 	 * where it lived as three free functions (cbarNormalize/
 	 * cbarNlevFromStep/cbarGenlevs) in an anonymous namespace: pure
 	 * arithmetic with no FLTK/widget dependency at all, so ui/'s own unit
-	 * test binary (there isn't one -- see PORTING.md's Phase 9 entry) was
+	 * test binary (there isn't one -- see docs/PORTING.md's Phase 9 entry) was
 	 * never actually required to test it; it belongs here instead, next to
 	 * colorIndex() for the same reason. Returns false (leaving the out
 	 * parameters untouched) for a degenerate range or fewer than 2

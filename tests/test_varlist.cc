@@ -4,7 +4,7 @@
 // addVariable() (and the internal new_fdblist() helper it calls) and
 // Dataset::findVariable() (core/src/dataset.cc), plus is_scannable() and
 // n_vars_in_list() (core/src/util.cc). This is the code Phase 5 of
-// modernization.md replaces wholesale (NCVar/
+// docs/modernization.md replaces wholesale (NCVar/
 // FDBlist's void*/AnyPtr-based intrusive linked lists become
 // std::vector<std::unique_ptr<...>>), and it had no test
 // before this file -- test_file_netcdf.cc only exercises the netcdf_*()

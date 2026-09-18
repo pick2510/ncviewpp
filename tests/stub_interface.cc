@@ -189,7 +189,7 @@ bool fireTimer()
 // be a raw char** with a "the UI frees it" contract that FltkViewerUi's
 // real implementation never actually honored (a genuine leak, fixed in
 // Phase 12b by making ownership structural via std::vector<std::string> --
-// see PORTING.md's Phase 12b entry). The stub just copies it here for the
+// see docs/PORTING.md's Phase 12b entry). The stub just copies it here for the
 // test to inspect; no manual free is needed any more.
 std::vector<std::string> g_last_dataedit_lines;
 int g_last_dataedit_nx = 0;

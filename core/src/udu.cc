@@ -331,7 +331,7 @@ is_unique( char *units )
 /* No `#else` stub branch here: core/CMakeLists.txt unconditionally
  * defines HAVE_UDUNITS2 and always builds the vendored UDUNITS-2, so a
  * no-udunits build is not a supported configuration today (see
- * PORTING.md's "refine the architecture" plan, Baseline section) -- the
+ * docs/PORTING.md's "refine the architecture" plan, Baseline section) -- the
  * stub implementations of udu_utinit/udu_utistime/udu_calc_tgran/
  * udu_fmt_time that used to live in an `#else` here could never actually
  * be compiled, and were deleted as dead code (Phase 3d) rather than kept

@@ -14,7 +14,7 @@ target_link_libraries(ncview_ui PUBLIC
     fltk_images
 )
 target_link_libraries(ncview_ui PRIVATE ncview_warning_flags ncview_sanitize_flags)
-# ui-modernization.md Phase U2: ncview_ui already builds warnings-clean at
+# docs/ui-modernization.md Phase U2: ncview_ui already builds warnings-clean at
 # -Wall -Wextra, so -Werror is enabled here too (app/tests haven't had their
 # own sweep, so they're left alone -- see core/CMakeLists.txt's Phase 9 note).
 if(MSVC)

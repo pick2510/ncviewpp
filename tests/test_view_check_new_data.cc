@@ -3,7 +3,7 @@
 // Characterization tests for View::checkNewData() (core/src/view.cc:517-706)
 // -- the once-a-second poll that lets ncview follow a file another process
 // is actively appending records to. Flagged for a test in Phase 3b's own
-// PORTING.md writeup ("the function is still untested... Add
+// docs/PORTING.md writeup ("the function is still untested... Add
 // test_view_check_new_data.cc"), then that test was never actually written
 // once the file-descriptor-leak lead 3b was chasing turned out false and
 // 3b moved on to do_print.cc's real bug instead. Round 4's reassessment

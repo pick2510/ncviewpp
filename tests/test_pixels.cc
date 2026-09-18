@@ -3,7 +3,7 @@
 // Characterization tests for core/src/util.cc's data_to_pixels() -- the
 // rendering transform at the heart of ncview (data value -> byte pixel,
 // applied per-frame to every 2-D field the app ever draws). Before this
-// file, no test touched it at all (see modernization.md Phase 0b): this is
+// file, no test touched it at all (see docs/modernization.md Phase 0b): this is
 // the safety net for the core data-model refactor that follows.
 //
 // data_to_pixels() reads and writes through several file-scope globals

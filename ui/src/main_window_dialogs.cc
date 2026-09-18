@@ -37,7 +37,7 @@ namespace ncview_ui {
 /* Small modal dialogs, run with their own Fl::wait() loop (the standard
  * FLTK pattern for a blocking modal window: show(), set_modal(), spin until
  * it's hidden by a button callback). Replaces upstream's Xt dialog/range.c
- * /set_options.c-family widgets one dialog at a time; see PORTING.md. */
+ * /set_options.c-family widgets one dialog at a time; see docs/PORTING.md. */
 
 namespace {
 struct ModalResult { bool ok = false; };
@@ -59,7 +59,7 @@ void MainWindow::setOptionsDialog()
 {
 	// Upstream's set_options.c also has a "select which colormaps are
 	// enabled for cycling" section, backed by interface/colormap_funcs.c
-	// (X11 colorcell allocation, deliberately not ported -- see PORTING.md's
+	// (X11 colorcell allocation, deliberately not ported -- see docs/PORTING.md's
 	// M6 notes); everything else there is reproduced here.
 	const int kOverlayY = 135;
 	int n_overlays = overlay_n_overlays();

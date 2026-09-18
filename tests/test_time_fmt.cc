@@ -8,7 +8,7 @@
 // TimeStandard::Months formatting -- plus udu_calc_tgran()'s granularity
 // classification. test_calendar.cc already covers calcalcs.cc's raw
 // calendar arithmetic and udu_utistime(); none of that reaches the actual
-// display-string formatting this file guards. See modernization.md Phase
+// display-string formatting this file guards. See docs/modernization.md Phase
 // 0b.
 #include <cstring>
 #include <cstdio>
@@ -237,7 +237,7 @@ TEST_CASE("fmt_time: a non-timelike dimension is a fatal internal error") {
     // treats this as unreachable-in-practice programmer error (core.cc's
     // callers only ever pass a dim they've already confirmed is timelike)
     // and exit()s rather than returning an error code. Out of scope for
-    // this pass (see modernization.md's "out of scope" decision on the
+    // this pass (see docs/modernization.md's "out of scope" decision on the
     // 192 exit() calls) to change, but worth pinning down as documented,
     // current behavior for whoever touches this next -- not run directly
     // since exit() would kill the test binary.

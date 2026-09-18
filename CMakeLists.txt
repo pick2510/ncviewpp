@@ -159,7 +159,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(NCVIEW_BUILD_TESTS "Build ncview_core headless tests" ON)
 
-# modernization.md Phase 0c: an end-to-end screenshot regression harness
+# docs/modernization.md Phase 0c: an end-to-end screenshot regression harness
 # (tests/ui_smoke.sh) that drives the real ncview binary under Xvfb via the
 # NCVIEW_TEST_AUTOSELECT/NCVIEW_TEST_DIALOG/NCVIEW_TEST_BUTTON hooks already
 # in ui/src/interface_fltk.cc and compares screenshots pixel-for-pixel
@@ -169,9 +169,9 @@ option(NCVIEW_BUILD_TESTS "Build ncview_core headless tests" ON)
 # platform has.
 option(NCVIEW_BUILD_UI_TESTS "Build the Xvfb screenshot regression test (needs Xvfb, ImageMagick, ncgen)" OFF)
 
-# modernization.md Phase 0d: build with -fsanitize=<value>, e.g.
+# docs/modernization.md Phase 0d: build with -fsanitize=<value>, e.g.
 # "address,undefined", applied to every target of ours (not the vendored
-# third_party/fltk or third_party/udunits2). PORTING.md's own verification
+# third_party/fltk or third_party/udunits2). docs/PORTING.md's own verification
 # step 5 calls for exactly this pass over the headless tests; empty (the
 # default) means sanitizers are off entirely, matching every build before
 # this option existed.
@@ -182,7 +182,7 @@ if(NCVIEW_SANITIZE)
     target_link_options(ncview_sanitize_flags INTERFACE -fsanitize=${NCVIEW_SANITIZE})
 endif()
 
-# modernization.md Phase 0c/10: `--coverage` (GCC/gcov's combined
+# docs/modernization.md Phase 0c/10: `--coverage` (GCC/gcov's combined
 # -fprofile-arcs -ftest-coverage compile flag plus the matching link flag
 # that pulls in libgcov) applied to our own targets only, same
 # opt-in-INTERFACE-library pattern as NCVIEW_SANITIZE just above. GCC/gcov

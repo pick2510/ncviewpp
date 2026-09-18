@@ -12,7 +12,7 @@ build machine (netCDF and expat as libraries; flex, bison, and
 texinfo as build tools).
 
 See [`CHANGELOG.md`](CHANGELOG.md) for what's changed release-to-release,
-and [`PORTING.md`](PORTING.md) for the porting plan and design rationale.
+and [`docs/PORTING.md`](docs/PORTING.md) for the porting plan and design rationale.
 
 ### Names
 
@@ -74,7 +74,7 @@ directory, a quirk of the vendored UDUNITS-2 build.
 `-DNCVIEW_STATIC_LINK=ON` statically links netCDF/HDF5/zstd/bz2/sz/zlib and
 the C++ runtime, and drops FLTK's Wayland backend (unused at runtime, but
 otherwise pulls in ~80 transitive shared libraries). Requires static (`.a`)
-builds of those libraries to be findable. See `PORTING.md` for what's
+builds of those libraries to be findable. See `docs/PORTING.md` for what's
 deliberately left dynamic and why.
 
 ```sh

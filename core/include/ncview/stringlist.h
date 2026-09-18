@@ -35,12 +35,12 @@ constexpr int STRINGLIST_SAVEFILE_VERSION = 1;
 /* The aux payload a stringlist entry can carry. Index 0 (std::monostate)
  * is SLTYPE_NULL -- "no aux data" -- and the variant's own index() is
  * exactly the old sltype tag, so there is no separate tag field to keep in
- * sync (see modernization.md Phase 3). */
+ * sync (see docs/modernization.md Phase 3). */
 using StringlistAux = std::variant<std::monostate, int, std::string, float, bool>;
 
 /*****************************************************************************/
 /* A general purpose list of character strings. Was an intrusive doubly-
- * linked list of individually malloc()'d nodes (see modernization.md Phase
+ * linked list of individually malloc()'d nodes (see docs/modernization.md Phase
  * 3); is now a plain std::vector, so most call sites still hold a
  * `Stringlist *` exactly as before (nullptr means "no list yet", matching
  * the old convention), but the *list itself is one contiguous allocation

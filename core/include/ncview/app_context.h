@@ -16,7 +16,7 @@
  * larger, separate undertaking). What IS achievable, and what this does:
  * collapse three differently-named globals down to one, so there is a
  * single, clearly-named composition root instead of several pretending to
- * be independently-owned pieces of state. See PORTING.md.
+ * be independently-owned pieces of state. See docs/PORTING.md.
  *
  * Renamed AppContext -> NcviewApp in Phase 11f, matching the object-graph
  * shape originally proposed for this arc (main() -> NcviewApp -> session/
@@ -68,7 +68,7 @@ struct NcviewApp {
 	 * redoing Phase 11a/11b's reference-threading work for the entire
 	 * codebase, not just the ~17 free functions and handful of methods
 	 * those phases actually touched. That is a real, much larger
-	 * project of its own, not a corner this phase cut; see PORTING.md's
+	 * project of its own, not a corner this phase cut; see docs/PORTING.md's
 	 * Phase 11f entry. What Phase 11f *did* do: every production call
 	 * site that reached `g_dataset`/`variables`/`pixel_transform`/
 	 * `framestore` as separate migration-bridge globals now goes through

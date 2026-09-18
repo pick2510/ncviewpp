@@ -1163,7 +1163,7 @@ int netcdf_dimvar_id( int fileid, char *dim_name, int *dimvar_gid )
 		/* If we were called with a group ID to begin with, try agian
 		 * with the root ID
 		 */
-		/* Suspected == vs = typo, preserved verbatim -- see modernization.md's
+		/* Suspected == vs = typo, preserved verbatim -- see docs/modernization.md's
 		 * "Follow-up commits" section. This always assigns NC_ENOGRP (truthy)
 		 * rather than comparing err to it, so the fallback below always runs. */
 		if( (err = NC_ENOGRP) )

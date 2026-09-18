@@ -30,7 +30,7 @@
  * interface/colormap_funcs.c) removed, EXCEPT for the small subset of those
  * functions core actually calls directly by name (not through the in_*
  * contract) -- those are declared below in "interface.h" as part of the seam
- * ncview_ui must implement. See PORTING.md.
+ * ncview_ui must implement. See docs/PORTING.md.
  */
 
 #pragma once
@@ -217,7 +217,7 @@ Button	which_button_pressed( void );
  * recomputeColorbar()). Each carried its own `view == NULL` guard that
  * was really a session fact ("no variable selected yet"), not a
  * genuine-anywhere possibility for a `View` method's `this`. See
- * PORTING.md's Phase 2 entry.
+ * docs/PORTING.md's Phase 2 entry.
  */
 /* Phase 11a threaded ViewerSession&/ViewerUi& through this instead of
  * reading the global `view` alias and the in_x()/x_x() free-function seam

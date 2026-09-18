@@ -2,11 +2,11 @@
 //
 // Characterization tests for the ".ncviewrc" state file round-trip
 // (core/src/handle_rc_file.cc + the Stringlist file format in
-// core/src/stringlist.cc). See modernization.md Phase 0b: Phase 3 replaces
+// core/src/stringlist.cc). See docs/modernization.md Phase 0b: Phase 3 replaces
 // Stringlist's intrusive linked list with a std::vector-backed container,
 // and the one thing that absolutely must not change as a result is the
 // on-disk format real users' existing ~/.ncviewrc files are written in --
-// PORTING.md's M6 notes describe a real such file, found during that work,
+// docs/PORTING.md's M6 notes describe a real such file, found during that work,
 // containing a run of "CMAP_<name> INT 1" lines recording per-colormap
 // enabled state.
 //
@@ -51,7 +51,7 @@ std::string read_file(const std::string &path) {
 // Builds the kind of state list colormap_funcs.c's colormap_options_to_
 // stringlist() would have written upstream, and this port's
 // get_persistent_X_state() (currently a stub returning nullptr, per
-// PORTING.md's M6 notes on the colormap-enable scope gap) will need to
+// docs/PORTING.md's M6 notes on the colormap-enable scope gap) will need to
 // produce again whenever that feature lands. Three entries is enough to
 // exercise ordering and both boolean-ish INT values (0 and 1) real files
 // use for "disabled"/"enabled".
@@ -138,7 +138,7 @@ TEST_CASE("rc file: read_state_from_file round-trips names, types, and values") 
 }
 
 TEST_CASE("rc file: a real upstream file with CMAP_* entries reads back untouched") {
-    // A representative copy of the kind of file PORTING.md's M6 notes
+    // A representative copy of the kind of file docs/PORTING.md's M6 notes
     // describe finding on a real machine with an actual upstream ncview
     // install: a header line plus a run of CMAP_<name> INT 1 lines. This
     // guards the "read an existing real-world file" path specifically,

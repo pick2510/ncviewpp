@@ -491,7 +491,7 @@ struct View {
 	 * parameter -- moved onto the type itself since none of them pop
 	 * dialogs, arm timers, or call any other in_/x_-prefixed UI function
 	 * (view.cc's other ~40-odd functions mix state with UI calls and
-	 * deliberately stayed free -- see PORTING.md's "OOP_redesign:
+	 * deliberately stayed free -- see docs/PORTING.md's "OOP_redesign:
 	 * view.cc" section for the full triage). All were already `static`
 	 * (file-local to view.cc) with no external callers, so converting
 	 * them is a pure in-file mechanical rename -- no header outside
@@ -546,7 +546,7 @@ struct View {
 	void fillViewData();
 	bool hasMissingData() const;
 
-	/* Phase 2 of the view.cc triage (PORTING.md): also file-local
+	/* Phase 2 of the view.cc triage (docs/PORTING.md): also file-local
 	 * (static, no external callers), also state-mutating, but each
 	 * makes exactly one direct UI call as part of that mutation --
 	 * kept inline rather than split into a separate controller-side
@@ -566,7 +566,7 @@ struct View {
 	 * contexts -- expose events, mouse clicks before any variable is
 	 * selected -- where the active view can genuinely not exist yet, and
 	 * so live on ViewerSession/ViewerController instead, which own the
-	 * unique_ptr and can check once internally: see PORTING.md's
+	 * unique_ptr and can check once internally: see docs/PORTING.md's
 	 * "refine the architecture" Phase 2 entry). Each of these is only
 	 * ever reached once a variable is already selected, so converting
 	 * them to View methods (called via `view->...`) is exactly as safe

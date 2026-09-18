@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Xvfb screenshot regression harness (modernization.md Phase 0c).
+# Xvfb screenshot regression harness (docs/modernization.md Phase 0c).
 #
 # Scripts the headless test hooks ui/src/interface_fltk.cc's in_initialize()
 # already provides (NCVIEW_TEST_AUTOSELECT, NCVIEW_TEST_DIALOG,
 # NCVIEW_TEST_BUTTON -- see that file's comments) into a repeatable
 # screenshot comparison, so a UI-visible regression from the core
-# modernization work (Phases 3-6 of modernization.md) is caught
+# modernization work (Phases 3-6 of docs/modernization.md) is caught
 # automatically instead of by manual `import`+eyeballing, which is how
-# PORTING.md's own M3/M4/M6 verification was actually done.
+# docs/PORTING.md's own M3/M4/M6 verification was actually done.
 #
 # Usage:
 #   tests/ui_smoke.sh <path-to-ncview-binary> [--update]

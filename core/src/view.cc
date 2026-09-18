@@ -1388,7 +1388,7 @@ View::allocStorage()
 	 * fatal everywhere else via unconditional exit(-1), so an unhandled
 	 * bad_alloc terminating the program is the same outcome (a hard
 	 * stop), just via a different, standard mechanism. See
-	 * modernization.md's Phase 6 notes for the record of this decision.
+	 * docs/modernization.md's Phase 6 notes for the record of this decision.
 	 */
 
 	/* Phase 13b: has2dAxes(), not has2dImage() -- this function is what

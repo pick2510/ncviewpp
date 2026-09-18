@@ -7,7 +7,7 @@
  * src/interface/SciPlot.c: a small popup window showing one or more XY
  * line plots ("Plot Along Dimension" from the main window's variable
  * browser). Unlike SciPlot (a custom Xt widget with a ~30-entry-point API,
- * see PORTING.md), PlotWidget only implements what plot_xy.c actually uses:
+ * see docs/PORTING.md), PlotWidget only implements what plot_xy.c actually uses:
  * autoscaled/user-set linear or log axes, up to MAX_LINES_PER_PLOT lines
  * with a legend, a data dump, and PostScript export.
  */

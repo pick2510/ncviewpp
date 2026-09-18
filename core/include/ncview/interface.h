@@ -13,7 +13,7 @@
  * x_error, x_force_set_invert_state, x_init_dim_info,
  * x_set_var_sensitivity, get_persistent_X_state, unlock_plot) -- upstream
  * never routed those through in_*, but they are exactly as much a part of
- * the seam. See PORTING.md, "Why the port is tractable".
+ * the seam. See docs/PORTING.md, "Why the port is tractable".
  *
  * OOP_redesign plan, Step 9b: every function declared below is implemented
  * once, in core/src/viewer_ui_bridge.cc, as a forwarder onto
