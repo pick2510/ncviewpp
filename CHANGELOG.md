@@ -5,7 +5,7 @@ Notable changes to this project, condensed from `docs/PORTING.md`,
 See those two files for full narrative detail and rationale; this is
 the short version.
 
-## [Unreleased]
+## [0.4.0] - 2026-09-18
 
 ### Added
 - `viridis`, `plasma`, `inferno`, `magma`, and `cividis` colormaps
@@ -37,6 +37,17 @@ the short version.
   the submodule's own copies, and `.gitignore`'d.
 
 ### Fixed
+- Crashes: a use-after-free when the menu bar's items were enabled or
+  disabled, which corrupted memory on startup with single-variable files
+  and could crash later in unrelated places; Cancel in the "Axes" dialog;
+  several crashes with 1-D variables; the file being watched for new
+  data disappearing; attributes of netCDF types ncview doesn't display.
+- Several out-of-bounds writes and stack-buffer overflows (long group and
+  variable names, the axis fallback paths, the frame cache), and an
+  `exit(0)` on a netCDF read error that quit silently instead of
+  reporting it. Details for each are in `docs/PORTING.md`, Phases 10-13.
+- Non-numeric (e.g. string/char) variables are no longer offered for
+  display, and two netCDF4 group-path lookups used the wrong group.
 - The colorbar's tick labels weren't fully redrawn after switching
   variables, leaving stale numbers from the previous variable on screen.
 - Two memory leaks in variable-switching, found as a side effect of the

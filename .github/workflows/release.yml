@@ -5,9 +5,9 @@ name: Release
 # archives to a GitHub Release.
 #
 # Normal use: push a tag matching v*.*.* (e.g. `git tag v2.1.11 && git push
-# origin v2.1.11`) -- CPACK_PACKAGE_VERSION in CMakeLists.txt is the source
-# of truth for the version actually baked into the packages, so keep the tag
-# in sync with it.
+# origin v2.1.11`) -- the project(... VERSION ...) line in CMakeLists.txt is
+# the source of truth for the version actually baked into the packages, so
+# keep the tag in sync with it.
 #
 # workflow_dispatch with an explicit tag is for re-publishing the same
 # version (e.g. a CI infra flake on one platform) without pushing a new tag:
