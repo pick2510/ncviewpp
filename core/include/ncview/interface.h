@@ -4,26 +4,37 @@
  * Copyright (C) 2026 Dominik Strebel
  *
  * The toolkit seam. ncview_core calls only the functions declared here to
- * talk to the UI; ncview_ui (FLTK) implements every one of them. This is
- * upstream's in_* contract (originally declared inline in ncview.protos.h,
- * implemented by src/interface/interface.c delegating to x_interface.c),
- * plus a handful of functions core calls directly by name that are really
- * UI dialogs/state (set_options, printer_options, x_range, x_dataedit,
- * x_seen_colormap_name, x_check_legal_colormap_loaded, x_create_colorbar,
- * x_draw_colorbar, x_error, x_force_set_invert_state, x_init_dim_info,
+ * talk to the UI. This is upstream's in_* contract (originally declared
+ * inline in ncview.protos.h, implemented by src/interface/interface.c
+ * delegating to x_interface.c), plus a handful of functions core calls
+ * directly by name that are really UI dialogs/state (set_options,
+ * printer_options, x_range, x_dataedit, x_seen_colormap_name,
+ * x_check_legal_colormap_loaded, x_create_colorbar, x_draw_colorbar,
+ * x_error, x_force_set_invert_state, x_init_dim_info,
  * x_set_var_sensitivity, get_persistent_X_state, unlock_plot) -- upstream
  * never routed those through in_*, but they are exactly as much a part of
  * the seam. See PORTING.md, "Why the port is tractable".
  *
- * A headless implementation of everything in this file lives in
- * tests/stub_interface.cc and is what proves ncview_core has no hidden UI
- * dependency.
+ * OOP_redesign plan, Step 9b: every function declared below is implemented
+ * once, in core/src/viewer_ui_bridge.cc, as a forwarder onto
+ * ncview/viewer_ui.h's ViewerUi virtual interface -- see that header for
+ * why (short version: lets ncview_ui's FltkViewerUi and tests'
+ * RecordingViewerUi both implement one interface instead of each
+ * providing a parallel set of ~48 free functions).
+ *
+ * "Refine the architecture" plan, Phase 11a/11b/11c: most call sites now
+ * reach the ViewerUi interface directly by method call
+ * (ui.in_x(...)/g_app.ui->in_x(...)) instead of through one of these free
+ * functions. Phase 11c re-verified, project-wide, which of the original
+ * 48 declarations still have a real caller and deleted the 35 that had
+ * none, along with their viewer_ui_bridge.cc forwarders -- see that
+ * file's own header comment for exactly which functions remain declared
+ * below and why. The corresponding virtual methods all still exist on
+ * ViewerUi (ncview/viewer_ui.h) and are called directly by name in most
+ * places; deleting a forwarder here only removes the now-unused
+ * free-function *spelling* of that call, not the capability itself.
  */
 #pragma once
-
-#include <functional>
-
-#include "ncview/stringlist.h"
 
 /* NCVar, NCDim, ncv_pixel, and PrintOptions come from ncview/defines.h,
  * which every translation unit that reaches this header includes first
@@ -35,9 +46,10 @@
 /******************************************************************************
  * in_* : implemented by src/interface/interface.c upstream, now by ncview_ui.
  *
- * Not here (moved to ncview/protos.h + core/src/interface_glue.cc instead):
- * in_variable_selected, in_button_pressed, in_error -- core itself calls
- * these, so they can't be things only ncview_ui implements. Also not here
+ * Not here (moved to ncview/protos.h + core/src/view.cc/do_buttons.cc/util.cc
+ * instead): in_variable_selected, in_colormap_selected, in_button_pressed,
+ * in_error -- core itself calls these, so they can't be things only
+ * ncview_ui implements. Also not here
  * (upstream had them as trivial one-line forwards to a *_core* function;
  * ncview_ui just calls that core function directly instead): report_position
  * (-> view_report_position), in_change_dat (-> view_change_dat),
@@ -46,60 +58,15 @@
  * in_clear_dim_buttons -- declared upstream but never actually called from
  * any core file (dead prototypes, like clip_i()); the real dimension-panel
  * entry points core uses are x_init_dim_info() and in_fill_dim_info(),
- * both below.
+ * both now reached only via the ViewerUi interface (ncview/viewer_ui.h),
+ * not as free functions -- see Phase 11c above.
  */
-void 	in_display_stuff	( const char *s, const char *var_name );
-void 	in_set_edit_place	( size_t index, int x, int y, int nx, int ny );
-void 	in_indicate_active_var  ( const char *var_name );
-void 	in_indicate_active_dim  ( Dimension dimension, const char *dim_name );
-void 	in_parse_args		( int *p_argc, char **argv );
-void 	in_initialize		( void );
 void 	in_set_label		( Label label_id, const char *string );
-void	in_process_user_input	( void );
-void	in_draw_2d_field 	( const unsigned char *data, size_t width, size_t height, size_t timestep );
-void	in_create_colormap	( const char *name, const ncv_pixel r[256], const ncv_pixel g[256], const ncv_pixel b[256] );
-char	*in_install_next_colormap( int do_widgets_flag );
-int	in_set_2d_size   	( size_t width, size_t height );
-void	in_set_sensitive	( Button button_id, int state );
 Message	in_dialog		( const char *message, int want_cancel_button );
-void 	in_var_set_sensitive	( const char *var_name, int sensitivity );
-void 	in_fill_dim_info	( const NCDim *d, int please_flip );
-void	in_set_cur_dim_value	( const char *name, const char *string );
 void 	in_set_cursor_busy	( void );
 void 	in_set_cursor_normal	( void );
-int 	in_set_scan_dims	( const Stringlist *dim_list, const char *x_axis, const char *y_axis, Stringlist **new_dim_list );
-void	in_change_min		( const char *label );
 void 	in_flush		( void );
-int	in_popup_XY_graph	( size_t n, int dimindex, double *xvals, double *yvals, const char *x_axis_title,
-				const char *y_axis_title, const char *title, const char *legend,
-				const Stringlist *scannable_dims );
-void 	in_query_pointer_position( int *x, int *y );
-void	in_popup_2d_window	( void );
-void	in_popdown_2d_window	( void );
 void 	in_timer_clear		( void );
-int	in_report_auto_overlay  ( void );
-/* Upstream signature took an Xt XtTimerCallbackProc + XtPointer; this port
- * uses std::function so the seam has no toolkit type in it. */
-void 	in_timer_set            ( std::function<void()> callback, unsigned long delay_millisec );
-char    *in_install_prev_colormap( int do_widgets );
-char	*in_install_colormap_by_name( const char *name, int do_widgets );
-/* Called by ncview_main() (core/src/ncview.cc) when it's given no input
- * files on the command line -- pops a native "open file(s)" dialog so the
- * app is still usable when launched from a GUI (double-click / dock icon /
- * Explorer "Open with"), not just from a shell with an argument. Multi-file
- * selection covers both "open a single file" and "open several files as a
- * time series" (upstream's own multi-file/virtual-variable handling, driven
- * off however many files come back here) with the one dialog. Returns NULL
- * if the user cancelled or picked nothing. */
-Stringlist *in_choose_input_files( void );
-/* Pops a native "save file" dialog (title/default_name seed it) so core can
- * ask for an output path without prompting for free-text in a plain dialog
- * box -- used by view_data_edit_dump() (core/src/view.cc). ret_path_size is
- * the capacity of the ret_path buffer; the implementation must never write
- * more than that, and must always NUL-terminate what it does write.
- * Returns Message::Cancel (leaving ret_path untouched) if the user
- * cancelled. */
-Message in_choose_save_file( const char *title, const char *default_name, char *ret_path, size_t ret_path_size );
 /* Called by do_print() (core/src/do_print.cc) once it has gathered the
  * metadata/pixels to print (info) and the user has confirmed the
  * page-layout settings in the printer_options() dialog below (po). Pops
@@ -112,19 +79,8 @@ void	in_print		( const PrintInfo &info, const PrintOptions &po );
  * Functions core calls directly (not via in_*) that are nonetheless UI
  * dialogs/state, implemented by ncview_ui.
  */
-void	set_options		( void );
 Message	printer_options		( PrintOptions *po );
-Message	x_range( float old_min, float old_max, float global_min, float global_max,
-		float *new_min, float *new_max, int *allvars );
-void	x_dataedit( char **text, int nx );
 int	x_seen_colormap_name( const char *name );
-void	x_check_legal_colormap_loaded( void );
-void	x_create_colorbar( float user_min, float user_max, Transform transform );
-void	x_draw_colorbar( void );
 void	x_error( const char *message );
-void	x_force_set_invert_state( int state );
-void	x_init_dim_info( const Stringlist *dim_list );
-void	x_set_var_sensitivity( const char *varname, int sens );
-void	unlock_plot( void );
-Stringlist *get_persistent_X_state( void );
 void	pix_to_rgb( ncv_pixel pix, int *r, int *g, int *b );
+void	in_create_colormap	( const char *name, const ncv_pixel r[256], const ncv_pixel g[256], const ncv_pixel b[256] );

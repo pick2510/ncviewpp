@@ -2,6 +2,7 @@
 add_library(ncview_ui STATIC
     src/interface_fltk.cc
     src/main_window.cc
+    src/main_window_dialogs.cc
     src/plot_window.cc
 )
 target_include_directories(ncview_ui PUBLIC

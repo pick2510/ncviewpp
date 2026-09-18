@@ -30,6 +30,7 @@ UPDATE=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GOLDEN_DIR="$SCRIPT_DIR/ui_smoke/golden"
 CDL_FILE="$SCRIPT_DIR/ui_smoke/sample.cdl"
+CDL_1D_FILE="$SCRIPT_DIR/ui_smoke/sample_1d.cdl"
 
 command -v Xvfb >/dev/null || { echo "ui_smoke: Xvfb not found, skipping" >&2; exit 77; }
 command -v import >/dev/null || { echo "ui_smoke: ImageMagick 'import' not found, skipping" >&2; exit 77; }
@@ -49,6 +50,8 @@ trap cleanup EXIT
 
 SAMPLE_NC="$WORKDIR/sample.nc"
 ncgen -o "$SAMPLE_NC" "$CDL_FILE" || { echo "ui_smoke: ncgen failed"; exit 1; }
+SAMPLE_1D_NC="$WORKDIR/sample_1d.nc"
+ncgen -o "$SAMPLE_1D_NC" "$CDL_1D_FILE" || { echo "ui_smoke: ncgen (1d) failed"; exit 1; }
 
 # Pick a display number unlikely to collide with a real X server or another
 # concurrent run of this script, then start Xvfb on it and wait for its
@@ -83,6 +86,7 @@ button_blowup_type NCVIEW_TEST_BUTTON=blowup_type
 button_transform NCVIEW_TEST_BUTTON=transform
 button_invert_colormap NCVIEW_TEST_BUTTON=invert_colormap
 button_invert_physical NCVIEW_TEST_BUTTON=invert_physical
+button_colormap NCVIEW_TEST_BUTTON=colormap
 '
 
 FAILED=0
@@ -142,6 +146,47 @@ while read -r case_name extra_env; do
 done <<EOF
 $CASES
 EOF
+
+# var_1d uses its own fixture (sample_1d.nc, a single genuinely 1-D
+# variable with no lat/lon) instead of $SAMPLE_NC -- see sample_1d.cdl's
+# header comment for why this isn't just a second variable added to the
+# shared sample.cdl. Otherwise identical to a loop case: screenshot,
+# compare against its golden.
+shot="$WORKDIR/var_1d.png"
+env -i DISPLAY="$DISPLAY" HOME="$WORKDIR" PATH="$PATH" \
+    NCVIEW_TEST_AUTOSELECT=1 \
+    "$NCVIEW_BIN" "$SAMPLE_1D_NC" >"$WORKDIR/var_1d.log" 2>&1 &
+NCVIEW_PID=$!
+sleep 1.5
+import -window root "$shot" 2>>"$WORKDIR/var_1d.log"
+kill "$NCVIEW_PID" >/dev/null 2>&1
+sleep 0.2
+kill -9 "$NCVIEW_PID" >/dev/null 2>&1
+wait "$NCVIEW_PID" 2>/dev/null
+NCVIEW_PID=""
+
+if [ "$UPDATE" = "1" ]; then
+    cp "$shot" "$GOLDEN_DIR/var_1d.png"
+    echo "ui_smoke: updated golden for var_1d"
+else
+    golden="$GOLDEN_DIR/var_1d.png"
+    if [ ! -f "$golden" ]; then
+        echo "ui_smoke: FAIL var_1d (no golden at $golden)"
+        FAILED=1
+    else
+        ae=$(compare -metric AE -fuzz 0 "$golden" "$shot" null: 2>&1)
+        ae_count="${ae%% *}"
+        if [ "$ae_count" != "0" ]; then
+            echo "ui_smoke: FAIL var_1d (AE=$ae, differing pixels) -- actual: $shot, expected: $golden"
+            FAILED=1
+        elif grep -q "got an expose event" "$WORKDIR/var_1d.log"; then
+            echo "ui_smoke: FAIL var_1d (stray debug output on stdout/stderr: 'got an expose event') -- log: $WORKDIR/var_1d.log"
+            FAILED=1
+        else
+            echo "ui_smoke: pass var_1d"
+        fi
+    fi
+fi
 
 # "print" is checked differently from the golden-screenshot cases above: it
 # runs do_print() to completion -- both the page-layout dialog and the

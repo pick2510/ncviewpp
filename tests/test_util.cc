@@ -2,6 +2,7 @@
 //
 // Unit tests for the pure, global-state-free helpers in core/src/util.cc.
 #include <cstring>
+#include <string>
 
 #include <doctest/doctest.h>
 
@@ -91,4 +92,62 @@ TEST_CASE("util: varname_no_groups splits leaf name from group path") {
     // only want the leaf name).
     varname_no_groups("forecast/temp", sans_groups, nullptr);
     CHECK(std::strcmp(sans_groups, "temp") == 0);
+}
+
+// Phase 10b (fuzzing pass): unpack_groupname()/varname_no_groups() assume
+// their varname argument fits in MAX_NC_NAME (256) -- true for a single
+// netCDF name, which the library itself caps at that length, but NOT true
+// for the *group-path* prefix these functions actually receive in
+// practice (built in file_netcdf.cc from nc_inq_grpname_full(), which has
+// no length or depth limit of its own: netCDF-4/HDF5 group nesting isn't
+// bounded). A file with enough nested groups produced two real,
+// confirmed-under-ASan bugs here before this phase added a length guard:
+// unpack_groupname()'s idx_slash[] stack array overflowing past >255
+// slashes, and (independently, at a shorter length) its ts[] copy being
+// silently truncated by snprintf while idx_slash[]'s indices -- computed
+// against the original, untruncated string -- still pointed past that
+// truncated content. Both functions now exit() with an error instead,
+// matching this file's own established style for otherwise-impossible
+// inputs. These tests pin correct behavior right up to that boundary; the
+// exit() path itself is deliberately NOT exercised here, same reasoning as
+// test_file_layer.cc not calling determine_file_type()'s exit() branch.
+TEST_CASE("util: unpack_groupname/varname_no_groups handle many nested groups, up to the boundary") {
+    // Single-character group names keep this comfortably under
+    // MAX_NC_NAME (256) in total length while still exercising deep
+    // nesting: 100 "a/" pairs (200 chars) + "leaf" (4) = 204.
+    const int n_groups = 100;
+    std::string varname;
+    for (int i = 0; i < n_groups; i++) {
+        varname += "a/";
+    }
+    varname += "leaf";
+    REQUIRE(varname.size() < 256);
+
+    char groupname[1024];
+    CHECK(unpack_groupname(varname.c_str(), -2, groupname) == 0);
+    CHECK(std::strcmp(groupname, "leaf") == 0);
+    CHECK(unpack_groupname(varname.c_str(), 0, groupname) == 0);
+    CHECK(std::strcmp(groupname, "a") == 0);
+    CHECK(unpack_groupname(varname.c_str(), n_groups - 1, groupname) == 0);
+    CHECK(std::strcmp(groupname, "a") == 0);
+    CHECK(unpack_groupname(varname.c_str(), -1, groupname) == 0);
+    CHECK(std::strlen(groupname) == varname.size() - 5 /* strlen("/leaf") */);
+
+    char sans_groups[1024], group[1024];
+    varname_no_groups(varname.c_str(), sans_groups, group);
+    CHECK(std::strcmp(sans_groups, "leaf") == 0);
+}
+
+TEST_CASE("util: count_nslashes counts every slash, including adversarial inputs") {
+    CHECK(count_nslashes("") == 0);
+    CHECK(count_nslashes("noslashes") == 0);
+    CHECK(count_nslashes("/") == 1);
+    CHECK(count_nslashes("a/b/c") == 2);
+    CHECK(count_nslashes("///") == 3);
+
+    // count_nslashes itself has no fixed-size buffer -- confirm it stays
+    // correct well past unpack_groupname's MAX_NC_NAME boundary, since it's
+    // the one function of the three with no such limit to worry about.
+    std::string many_slashes(1000, '/');
+    CHECK(count_nslashes(many_slashes.c_str()) == 1000);
 }

@@ -45,17 +45,50 @@ add_executable(ncview_core_tests
     test_calendar.cc
     test_util.cc
     test_file_netcdf.cc
+    test_netcdf_file.cc
+    test_dataset.cc
     test_pixels.cc
+    test_shrink.cc
+    test_expand.cc
+    test_dim_mapping.cc
+    test_frame_renderer.cc
+    test_frame_cache.cc
     test_rcfile.cc
     test_time_fmt.cc
     test_varlist.cc
     test_view_data_edit.cc
+    test_controller_characterization.cc
+    test_session_fixture.cc
+    test_playback.cc
+    test_nc_fixture.cc
+    test_button_dispatch.cc
+    test_view_null_guards.cc
+    test_view_navigation.cc
+    test_view_draw.cc
+    test_view_dims.cc
+    test_view_check_new_data.cc
+    test_view_xy_plot.cc
+    test_view_1d_guards.cc
+    test_view_labels.cc
+    test_multifile.cc
+    test_do_print.cc
+    test_overlay.cc
+    test_file_layer.cc
+    test_file_metadata.cc
+    test_cli_options.cc
+    test_colormaps.cc
     stub_interface.cc
 )
 target_include_directories(ncview_core_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/doctest
+    # So test files can #include "support/session_fixture.h",
+    # "support/scratch_home.h", etc. -- shared test-only infrastructure
+    # under tests/support/ (see the "refine the architecture" plan's
+    # Phase 0a), analogous to how test_udunits_helper.h is already
+    # included unqualified from tests/ itself.
+    ${CMAKE_CURRENT_SOURCE_DIR}
 )
-target_link_libraries(ncview_core_tests PRIVATE ncview_core ncview_sanitize_flags)
+target_link_libraries(ncview_core_tests PRIVATE ncview_core ncview_sanitize_flags ncview_coverage_flags)
 add_dependencies(ncview_core_tests ncview_core_linkcheck)
 add_test(NAME ncview_core_tests COMMAND ncview_core_tests)
 # Defense in depth against a hang like the HDF5 file-locking one this suite

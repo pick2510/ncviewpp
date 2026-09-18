@@ -37,14 +37,14 @@ davidwilliampierce@gmail.com
  * is done with the stringlist (by saving it to a file, or example), then the calling
  * routine must delete the stringlist as so:
  *
- *      state_to_save = get_persistent_state();
+ *      state_to_save = get_persistent_state( ui );
  *      stringlist_delete_entire_list( state_to_save );
  */
  	Stringlist *
-get_persistent_state()
+get_persistent_state( ViewerUi &ui )
 {
 	/* Only one module saves state info at the moment */
-	return( get_persistent_X_state() );
+	return( ui.get_persistent_X_state() );
 }
 
 /*================================================================================

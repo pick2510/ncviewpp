@@ -69,51 +69,6 @@ stringlist_add_string( Stringlist **list, const char *new_string, const Stringli
 }
 
 /*******************************************************************************
- * Adds the given string to the list, and returns a pointer to the
- * new list element, with alphabetic ordering.
- * was: add_to_stringlist_ordered
- * Returns 0 on success, -1 on error (usually inability to allocate memory)
- */
-	int
-stringlist_add_string_ordered( Stringlist **list, const char *new_string, const StringlistAux &aux )
-{
-	int	err;
-
-	if( list == nullptr ) {
-		fprintf( stderr, "stringlist: error, passed a null reference to a stringlist\n" );
-		return( -5 );
-		}
-
-	if( (err = stringlist_check_args( new_string, aux )) != 0 ) {
-		fprintf( stderr, "stringlist_add_string: error, bad arguments passed\n" );
-		return( err );
-		}
-
-	if( *list == nullptr )
-		*list = new Stringlist();
-
-	/* Find the first element that sorts after new_string; insert before it.
-	 * Matches the original's insertion-point search exactly (strcmp(new,
-	 * existing) > 0 keeps advancing). Note: like the original, only the
-	 * newly-inserted element's .index is set to its insertion position --
-	 * elements after it are NOT renumbered. (Nothing in this codebase
-	 * calls this function, so that quirk has no observable effect today;
-	 * preserved rather than "fixed" per modernization.md's strict-parity
-	 * rule.) */
-	size_t pos = 0;
-	while( (pos < (*list)->size()) && (new_string > (**list)[pos].string) )
-		pos++;
-
-	StringlistEntry entry;
-	entry.string = new_string;
-	entry.index  = (int)pos;
-	entry.aux    = aux;
-	(*list)->insert( (*list)->begin() + pos, std::move(entry) );
-
-	return( 0 );
-}
-
-/*******************************************************************************
  * Concatenate one stringlist onto the end of another stringlist. I.e., if
  * dest is a stringlist, and src is a stringlist, this returns (dest, src)
  * This COPIES data to a new entry on the dest list, so if you are done with

@@ -1,7 +1,7 @@
 /*
  * Ncview by David W. Pierce.  A visual netCDF file viewer.
- * Copyright (C) 2026 Dominik Strebel
  * Copyright (C) 1993-2024 David W. Pierce
+ * Modifications Copyright (C) 2026 Dominik Strebel
  *
  * This program  is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 3 as
@@ -40,26 +40,59 @@
 
 #include "ncview/stringlist.h"
 #include "ncview/interface.h"
+#include "ncview/app_context.h"
+
+class NetCDFFile;
 
 /* Global state, defined in ncview.cc. Upstream had every .c file that
  * needed these declare its own local `extern`; this is the one canonical
  * declaration ncview_ui can use too. */
 extern Options options;
-extern std::vector<std::unique_ptr<NCVar>> variables;
+
+/* g_app (ncview/app_context.h) is the single composition-root global:
+ * it owns the ViewerSession (Dataset, active ViewState, FrameCache,
+ * pixel_transform, Options's field storage), the ViewerController, and a
+ * non-owning pointer to whichever ViewerUi is installed. `g_dataset`,
+ * `view`, `framestore`, and `pixel_transform` are migration bridges --
+ * references onto g_app.session's own members -- so the many existing
+ * callsites across core/, ui/, and tests/ that read these globals by
+ * their original names keep compiling and behaving identically. All are
+ * defined together in ncview.cc, except `view`, which is defined in
+ * view.cc (its sole owner before this step). */
+extern NcviewApp g_app;
+extern Dataset &g_dataset;
+extern std::vector<std::unique_ptr<NCVar>> &variables;
+extern std::unique_ptr<ViewState> &view;
+extern FrameCache &framestore;
+extern std::vector<ncv_pixel> &pixel_transform;
 
 /******************************************************************************
  * in ncview.c
  */
 /* Upstream's main(); renamed so ncview_ui's app/main.cc can be the real
- * process entry point (and so this library never defines `main` itself). */
-int	ncview_main		    ( int argc, char **argv );
+ * process entry point (and so this library never defines `main` itself).
+ * Phase 11a ("refine the architecture" plan, Part IV) added the ViewerUi&
+ * parameter: app/main.cc already constructs the real FltkViewerUi before
+ * calling this, so passing it explicitly (in addition to still setting
+ * g_app.ui, which other not-yet-threaded code still reads) removes this
+ * function's own internal reach into that global. */
+int	ncview_main		    ( int argc, char **argv, ViewerUi &ui );
 void	initialize_misc		    ( void );
+/* The options-fields-and-framestore-defaulting part of initialize_misc(), split
+ * out so it can be re-run without repeating udu_utinit(NULL) -- see its
+ * definition in ncview.cc and tests/support/session_fixture.h. */
+void	reset_session_defaults	    ( void );
 Stringlist *parse_options           ( int argc,  char *argv[] );
 void 	initialize_file_interface   ( Stringlist *input_files );
-void	initialize_display_interface( void );
+/* Phase 11a threaded ViewerUi& through this and process_user_input()
+ * below (2 and 1 internal seam calls respectively, both single-caller
+ * chains from ncview_main()); initialize_colormaps()/init_cmap_from_file()
+ * stay untouched -- the latter has fixed-signature test call sites
+ * (tests/test_colormaps.cc) this phase didn't want to disturb. */
+void	initialize_display_interface( ViewerUi &ui );
 void	initialize_colormaps	    ( void );
 void	init_cmap_from_file	    ( const char *dir_name, const char *file_name, int n_suffix );
-void	process_user_input          ( void );
+void	process_user_input          ( ViewerUi &ui );
 void	quit_app		    ( void );
 void	create_default_colormap     ( void );
 int	check			    ( int value, int min, int max );
@@ -70,41 +103,24 @@ void	useage			    ( void );
 
 /******************************************************************************
  * in file.c
+ *
+ * The 13 single-file fi_*() forwarders that used to live here (fi_list_vars,
+ * fi_n_dims, fi_var_size, fi_scannable_dims, fi_title, fi_long_var_name,
+ * fi_var_units, fi_dim_units, fi_dim_longname, fi_dim_id_to_name,
+ * fi_dim_name_to_id, fi_fill_aux_data, fi_recdim_id) were collapsed onto
+ * NetCDFFile methods (Phase 6 of the "refine the architecture" plan) --
+ * see core/include/ncview/dataset.h.
  */
-int 	fi_confirm       ( char *name );
-int	fi_writable      ( char *name );
-int 	fi_initialize    ( char *name, int nfiles );
-Stringlist *fi_list_vars ( int fileid );
-int	fi_n_dims	 ( int fileid, char *var_name );
-size_t	*fi_var_size	 ( int fileid, char *var_name );
-void 	fi_get_data      ( NCVar *var, size_t *start_pos, size_t *count, void *data );
+int 	fi_initialize    ( char *name );
 void 	fi_close         ( int fileid );
 void	determine_file_type( Stringlist *input_files );
-Stringlist *fi_scannable_dims( int fileid, char *var_name );
-std::string fi_title        ( int fileid );
-std::string fi_long_var_name( int fileid, std::string_view var_name );
-std::string fi_var_units    ( int fileid, std::string_view var_name );
-std::string fi_dim_units    ( int fileid, std::string_view dim_name );
 std::string fi_dim_calendar ( int fileid, std::string_view dim_name );
-int 	fi_has_dim_values( int fileid, char *dim_name );
-std::string fi_dim_longname ( int fileid, std::string_view dim_name );
-nc_type fi_dim_value     ( NCVar *v, int dim_id, size_t place, double *ret_val_double, char *ret_val_char,
-				int *return_has_bounds, double *return_bounds_min, double *return_bounds_max,
-				size_t *complete_ndim_virt_place );
-std::string fi_dim_id_to_name( int fileid, std::string_view var_name, int dim_id );
-int 	fi_dim_name_to_id( int fileid, char *var_name, char *dim_name );
-size_t 	fi_n_dim_entries ( int fileid, char *dim_name );
-void 	fi_fill_aux_data ( int id, char *var_name, FDBlist *fdb );
-void 	fi_fill_value	 ( NCVar *var, float *fillval );
-int 	fi_recdim_id     ( int fileid );
 
 /******************************************************************************
  * in file_netcdf.c, netcdf specific routines
  */
 std::string netcdf_att_string       ( int fileid, std::string_view var_name );
-std::string netcdf_global_att_string( int fileid );
 int 	netcdf_fi_confirm	( char *name );
-int 	netcdf_fi_writable	( char *name );
 int 	netcdf_fi_initialize	( char *name );
 Stringlist *netcdf_fi_list_vars	( int fileid );
 int	netcdf_fi_n_dims	( int fileid, char *var_name );
@@ -113,7 +129,6 @@ void 	netcdf_fi_get_data	( int fileid, char *var_name, size_t *start_pos,
 						size_t *count, float *data, NetCDFOptions *aux_data );
 void	netcdf_fi_close		( int fileid );
 int 	netcdf_n_dims 		( int cdfid, char *varname );
-char	*netcdf_varindex_to_name( int cdfid, int index );
 Stringlist *netcdf_scannable_dims( int fileid, char *var_name );
 std::string netcdf_title           ( int fileid );
 std::string netcdf_long_var_name   ( int fileid, std::string_view var_name );
@@ -133,108 +148,95 @@ int	netcdf_min_option_set	( NCVar *var, float *ret_min );
 int	netcdf_max_option_set	( NCVar *var, float *ret_max );
 void 	netcdf_fill_value	( int file_id, char *var_name, float *v, NetCDFOptions *opts );
 int 	netcdf_fi_recdim_id     ( int fileid );
-int 	netcdf_dimvar_bounds_id ( int fileid, char *dim_name, int *nvertices );
 std::string netcdf_dim_calendar( int fileid, std::string_view dim_name );
 int 	safe_ncvarid( int fileid, char *varname );
 
 /******************************************************************************
- * in util.c, general utility routines
+ * util.cc was dissolved in Phase 4b of the "refine the architecture" plan
+ * -- these declarations remain, but the definitions they refer to now
+ * live in the files each comment below names.
  */
+/* data_to_pixels()/expand_data() moved onto View (View::dataToPixels(),
+ * private View::expandData()) -- see core/src/render_pipeline.cc.
+ * close_enough/clip_f have no natural View to attach to and stay free
+ * functions, also now defined in render_pipeline.cc. new_netcdf() lost its
+ * external linkage entirely: it moved into an anonymous namespace in
+ * dataset.cc, its only caller. */
 int 	close_enough	   ( float data, float fill );
-void 	new_netcdf         ( NetCDFOptions **n );
-int	data_to_pixels     ( View *v );
-void	add_var_to_list    ( char *var_name, int file_id, char *filename, int nfiles );
-NCVar	*get_var	   ( const char *var_name );
-void	init_min_max	   ( NCVar *var );
 void	clip_f		   ( float *val, float min, float max );
+/* Only called by Dataset::addVariable() (ncview/dataset.h) -- fills in
+ * fields of an already-allocated NCVar* from netCDF metadata without
+ * touching the variable list itself, so it stayed a free function here
+ * rather than moving onto Dataset with the functions that do. Now defined
+ * in var_metadata.cc (Phase 4b), same reasoning, new file. */
 void 	fill_dim_structs   ( NCVar *v );
-void 	expand_data	   ( float *big_data, View *v, size_t array_size );
-void 	check_ranges       ( NCVar *var );
+/* Ditto -- also only called by Dataset::addVariable(). */
+void	handle_dim_mapping ( NCVar *v );
 std::string limit_string   ( std::string_view s );
 std::vector<int> gen_overlay       ( View *v, char *overlay_fname );
 void 	fmt_time	   ( char *temp_string, size_t temp_string_len, double new_dimval, NCDim *dim, int include_granularity );
 int	n_vars_in_list	   ( const std::vector<std::unique_ptr<NCVar>> &v );
-void 	set_blowup_type	   ( BlowupType new_type );
-int 	n_strings_in_list  ( Stringlist *s );
+/* Phase 11a threaded ViewerUi& through this instead of reaching g_app.ui
+ * internally via in_set_label()'s free-function seam; its two
+ * ViewerController::blowupType() call sites don't hold a ViewerUi of
+ * their own yet (that's 11c), so they pass g_app.ui explicitly for now. */
+void 	set_blowup_type	   ( BlowupType new_type, ViewerUi &ui );
 int 	strncmp_nocase     ( const char *s1, const char *s2, size_t n );
-Message	warn_if_file_exits ( char *fname );
 void 	virt_to_actual_place( NCVar *var, size_t *virt_pl, size_t *act_pl, FDBlist **file );
-void 	calc_dim_minmaxes   ( void );
-void    add_vars_to_list    ( Stringlist *var_list, int id, char *filename, int nfiles );
 int     is_scannable        ( NCVar *v, int i );
-void 	sl_cat		    ( Stringlist **dest, Stringlist **src );
-void 	get_min_max_onestep( NCVar *var, size_t n_other, size_t tstep, float *data,
-					float *min, float *max, int verbose );
 int 	unpack_groupname( const char *varname, int ig, char *groupname );
-void 	cache_scalar_coord_info( const std::vector<std::unique_ptr<NCVar>> &vars );
 int 	count_nslashes	    ( const char *s );
-Stringlist *get_group_list  ( const std::vector<std::unique_ptr<NCVar>> &vars );
 void 	varname_no_groups   ( const char *varname, char *varname_sans_groups, char *groupname );
-unsigned char interp( int i, int range_i, unsigned char *mat, int n_entries );
 
 /******************************************************************************
  * in do_buttons.c
+ *
+ * The 21 do_*() action functions that used to live here (do_range,
+ * do_pause, ..., do_blowup_type) are gone -- "refine the architecture"
+ * plan, Phase 1. Each had become a two-line forward onto
+ * g_app.controller (ncview/app_context.h) after the OOP_redesign plan's
+ * Step 7, with no logic of its own left; every call site now calls the
+ * corresponding ViewerController method directly. which_button_pressed()
+ * stays a free function (it's part of the interface.h-adjacent seam some
+ * UI code queries directly, not just an internal forwarder).
  */
 Button	which_button_pressed( void );
-void 	do_range 	  ( Modifier modifier );
-void 	do_quit		  ( Modifier modifier );
-void 	do_data_edit	  ( Modifier modifier );
-void 	do_info		  ( Modifier modifier );
-void 	do_options        ( Modifier modifier );
-void 	do_dimset         ( Modifier modifier );
-void	do_restart        ( Modifier modifier );
-void	do_rewind         ( Modifier modifier );
-void	do_backwards      ( Modifier modifier );
-void	do_pause          ( Modifier modifier );
-void	do_forward        ( Modifier modifier );
-void	do_fastforward    ( Modifier modifier );
-void	do_colormap_sel   ( Modifier modifier );
-void	do_invert_physical( Modifier modifier );
-void	do_invert_colormap( Modifier modifier );
-void	do_set_minimum    ( Modifier modifier );
-void	do_set_maximum    ( Modifier modifier );
-void	do_blowup	  ( Modifier modifier );
-void	do_transform	  ( Modifier modifier );
-void	do_blowup_type	  ( Modifier modifier );
 
 /******************************************************************************
  * in view.c
+ *
+ * "Refine the architecture" plan, Phase 2 moved the 12 entry points that
+ * used to live here -- change_view, view_draw, view_change_cur_dim,
+ * view_set_cur_dim_index, view_get_cur_dim_index, view_report_position,
+ * plot_XY, set_min_from_curdata, set_max_from_curdata,
+ * invalidate_all_saveframes, view_recompute_colorbar, view_current_nt --
+ * onto ViewerSession/ViewerController (ncview/app_context.h:
+ * g_app.session.currentNt()/curDimIndex()/invalidateAllSaveframes(),
+ * g_app.controller.stepView()/draw()/changeCurDim()/setCurDimIndex()/
+ * reportPosition()/plotXY()/setMinFromCurdata()/setMaxFromCurdata()/
+ * recomputeColorbar()). Each carried its own `view == NULL` guard that
+ * was really a session fact ("no variable selected yet"), not a
+ * genuine-anywhere possibility for a `View` method's `this`. See
+ * PORTING.md's Phase 2 entry.
  */
-int 	set_scan_variable    ( NCVar *var );
-void 	set_scan_view        ( size_t scan_place );
-int 	change_view          ( int delta, int interpretation );
-int	view_draw            ( int allow_saveframes_useage, int force_range_to_frame );
-void 	view_change_cur_dim  ( char *dim_name, Modifier modifier );
-void	view_set_cur_dim_index( const char *dim_name, long place );
-size_t	view_get_cur_dim_index( const char *dim_name );
-void	view_forward         ( void );
-void	view_backward        ( void );
-void	view_change_blowup   ( int delta, int redraw_flag, int view_var_is_valid );
-void	init_saveframes	     ( void );
-void 	redraw_dimension_info( void );
-void 	redraw_ccontour      ( void );
-void	view_check_new_data  ( int unused );
-void	view_report_position ( int x, int y, unsigned int button_mask );
+/* Phase 11a threaded ViewerSession&/ViewerUi& through this instead of
+ * reading the global `view` alias and the in_x()/x_x() free-function seam
+ * internally; its sole caller, in_variable_selected() (the fixed
+ * UI-triggered seam entry point just above), passes g_app.session/
+ * g_app.ui explicitly. */
+int 	set_scan_variable    ( NCVar *var, ViewerSession &session, ViewerUi &ui );
+/* Formerly also declared here: view_forward()/view_backward() (never
+ * defined anywhere, never called -- dead upstream declarations, removed
+ * in the same Phase 1 cleanup) and redraw_ccontour() (a one-line wrapper
+ * around view_draw() with zero callers, removed along with its
+ * definition in view.cc). */
 void 	view_report_position_vals( float xval, float yval, int plot_index );
-void 	plot_XY              ( void );
-void 	set_dataedit_place   ( void );
-void    view_data_edit_dump  ( void );
-void 	set_min_from_curdata ( void );
-void 	set_max_from_curdata ( void );
-void	beep		     ( void );
-void    invalidate_all_saveframes( void );
-void	view_set_XY_plot_axis( char * );
-void	view_plot_XY_fmt_x_val( float val, int dimindex, char *s, size_t slen );
-void 	view_change_dat	     ( size_t index, float new_val );
 void	view_get_scaled_size ( int blowup, size_t old_nx, size_t old_ny, size_t *new_nx, size_t *new_ny );
-void 	view_change_transform( int delta );
-void 	view_recompute_colorbar( void );
-void    view_set_range_frame ( void );
-void    view_set_range       ( void );
-void    view_set_scan_dims   ( void );
-void 	view_data_edit       ( void );
-void 	view_information     ( void );
-long 	view_current_nt      ( void );
+/* Phase 11a threaded ViewerUi& through this instead of reaching g_app.ui
+ * via in_set_label()'s seam internally; its two
+ * ViewerController::transform() call sites pass g_app.ui explicitly,
+ * matching set_blowup_type()'s treatment above. */
+void 	view_change_transform( int delta, ViewerUi &ui );
 
 /******************************************************************************
  * in overlay.c
@@ -261,6 +263,12 @@ void 	udu_fmt_time( char *temp_string, size_t temp_string_len, double new_dimval
 void epic_fmt_time( char *temp_string, size_t temp_string_len, double new_dimval, NCDim *dim );
 int  epic_istime0( int fileid, NCVar *v, NCDim *d );
 TimeGranularity  epic_calc_tgran( int fileid, NCDim *d );
+/* The TimeStandard dispatch layer (formerly util.cc, moved here Phase 4b
+ * of the "refine the architecture" plan): handle_time_dim() is called from
+ * var_metadata.cc's fill_dim_structs(), across a TU boundary, so it needs
+ * external linkage here -- unlike months_calc_tgran(), which stays a
+ * private helper called only from within this file. */
+void	handle_time_dim	   ( NetCDFFile *file, NCVar *v, int dimid );
 
 /******************************************************************************
  * in do_print.c
@@ -273,12 +281,19 @@ void 	do_print	( void );
  */
 int 	write_state_to_file( Stringlist *state_to_save );
 int 	read_state_from_file( Stringlist **state );
-Stringlist *get_persistent_state();
+/* Phase 11a threaded ViewerUi& through this instead of reaching g_app.ui
+ * to call get_persistent_X_state() (itself a seam function) internally.
+ * Sole caller is ncview_main(), which now holds a ViewerUi& of its own. */
+Stringlist *get_persistent_state( ViewerUi &ui );
 
 /******************************************************************************
- * in interface_glue.c -- toolkit-agnostic logic factored out of upstream's
- * src/interface/interface.c because core itself calls these (not just the
- * UI); see that file's header comment.
+ * Toolkit-agnostic logic factored out of upstream's src/interface/interface.c
+ * because core itself calls these (not just the UI). in_variable_selected
+ * lives in view.cc next to set_scan_variable(); in_button_pressed and
+ * in_colormap_selected live in do_buttons.cc next to the do_*() functions
+ * they dispatch to; in_error lives in viewer_ui_bridge.cc (moved there
+ * from util.cc in Phase 4b of the "refine the architecture" plan, since
+ * every other UI-seam function already lives in that file).
  */
 void	in_variable_selected	( const char *var_name );
 void	in_colormap_selected	( const char *name );

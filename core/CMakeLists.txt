@@ -3,23 +3,33 @@
 # ncview/interface.h seam. See PORTING.md.
 add_library(ncview_core STATIC
     src/calcalcs.cc
+    src/dataset.cc
     src/do_buttons.cc
     src/do_print.cc
     src/epic_time.cc
+    src/cli_options.cc
+    src/colormap_library.cc
     src/file.cc
     src/file_netcdf.cc
+    src/frame_cache.cc
+    src/frame_renderer.cc
     src/handle_rc_file.cc
-    src/interface_glue.cc
     src/ncview.cc
     src/overlay.cc
+    src/render_pipeline.cc
     src/stringlist.cc
     src/udu.cc
     src/utCalendar2_cal.cc
-    src/util.cc
+    src/legal_text.cc
+    src/var_metadata.cc
+    src/varname_utils.cc
     src/view.cc
+    src/viewer_controller.cc
+    src/viewer_session.cc
+    src/viewer_ui_bridge.cc
 )
 set_target_properties(ncview_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_link_libraries(ncview_core PRIVATE ncview_warning_flags ncview_sanitize_flags)
+target_link_libraries(ncview_core PRIVATE ncview_warning_flags ncview_sanitize_flags ncview_coverage_flags)
 # modernization.md Phase 9: core/WARNINGS.md is empty as of this phase, so
 # -Werror is enabled here -- only for ncview_core, not ncview_ui/app/tests,
 # which haven't had the same warning sweep done on their own sources.

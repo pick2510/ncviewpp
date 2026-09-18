@@ -16,7 +16,15 @@
 
 #include "fast_exit.h"
 
+// Defined in stub_interface.cc; must run before any test reaches the
+// interface.h seam. Called explicitly here, rather than via a static
+// initializer in stub_interface.cc, because g_app (ncview/app_context.h)
+// requires dynamic initialization itself -- see installRecordingViewerUi()'s
+// own comment for why that makes static-initializer ordering unsafe.
+void installRecordingViewerUi();
+
 int main(int argc, char **argv) {
+    installRecordingViewerUi();
     doctest::Context context;
     context.applyCommandLine(argc, argv);
     int res = context.run();

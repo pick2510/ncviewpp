@@ -1,7 +1,7 @@
 /*
  * Ncview by David W. Pierce.  A visual netCDF file viewer.
- * Copyright (C) 2026 Dominik Strebel
  * Copyright (C) 1993 through 2024 David W. Pierce
+ * Modifications Copyright (C) 2026 Dominik Strebel
  *
  * This program  is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 3 as 
@@ -33,17 +33,28 @@
 
 /* Include files */
 #include "ncview/includes.h"
+#include "ncview/dataset.h"	/* NetCDFFile -- file0->title()/dimUnits()/etc. below (Phase 6) */
 #include "ncview/defines.h"
+#include "ncview/frame_cache.h"
 #include "ncview/protos.h"
+#include "view_internal.h"
 
 /* External variables */
 extern	Options options;
-extern  FrameStore framestore;
 
-View  *view = NULL;
+/* Owns the active ViewState (an alias for View -- see defines.h). A
+ * unique_ptr rather than a raw pointer so that every reassignment below
+ * (set_scan_variable()'s variable switch, invalidate_variable()'s reset)
+ * actually deletes whatever it previously owned instead of leaking it --
+ * see those functions for the two sites this used to leak from. Bound to
+ * g_app.session's own member (OOP_redesign plan, Step 8) rather than
+ * owning storage directly -- view.cc stays the file that constructs and
+ * mutates it, ViewerSession is just where the storage now lives. */
+std::unique_ptr<ViewState> &view = g_app.session.activeView();
 
-/* See comments in routine "view_draw" */
-static int 	lockout_view_changes = false;
+/* See comments in routine "ViewerController::draw" (viewer_controller.cc).
+ * Not static: shared with viewer_controller.cc via view_internal.h. */
+int 	lockout_view_changes = false;
 
 /* Saved x/y values that are on the XY plot, used later for
  * dumping out.
@@ -60,32 +71,21 @@ static NCDim *plot_XY_dim[MAX_PLOT_XY];
 #define	BUTTONS_ALL_ON		1
 #define	BUTTONS_TIMEAXIS_OFF	2
 #define	BUTTONS_ALL_OFF		3
+/* Phase 13c: everything that acts on the 2-D picture, for a variable that
+ * hasn't got one (View::has2dAxes() false). Distinct from BUTTONS_ALL_OFF,
+ * which is the "this variable is unusable, stand down" state
+ * invalidate_variable() uses: the controls that still make sense for a 1-D
+ * plot -- colormap, invert-colormap, range, info -- stay on here. */
+#define	BUTTONS_2D_OFF		4
 
-/* Prototypes applicable to routines used ONLY in this file */
-static void 		determine_scan_axes( View *view, NCVar *var, View *old_view );
-static void 		initial_determine_scan_axes( View *view, NCVar *var );
-static void 		fill_view_data( View *v );
-static void 		view_set_axis( View *local_view, Dimension dimension, char *new_dim_name );
-static void 		alloc_view_storage( View *view );
-static void 		init_view( View **view, NCVar *var );
-static void 		set_buttons( int to_state );
-static void 		re_determine_scan_axes( View *new_view, NCVar *new_var, View *old_view );
-static void 		set_scan_place( View *new_view, NCVar *var, View *old_view );
-static void 		initial_set_scan_place( View *view, NCVar *var );
-static void 		re_set_scan_place( View *new_view, NCVar *new_var, View *old_view );
-static void		calculate_blowup( View *view, NCVar *var, int val_to_set_to );
-static void 		draw_file_info( NCVar *var );
-static void 		label_dimensions( View *view );
-static void 		show_current_dim_values( View *view );
-static void		flip_if_inverted( View *view );
-static void 		set_range_labels( float min, float max );
-static void 		set_scan_buttons( View *local_view );
-static void 		view_data_edit_warn();
-static void 		invalidate_variable( NCVar *var );
-static void 		plot_XY_sc( size_t *start, size_t *count );
-static void 		mouse_xy_to_data_xy( int mouse_x, int mouse_y, int blowup, size_t *data_x, size_t *data_y );
-static int 		view_data_has_missing( View *v );
-static void 		view_construct_scalar_coord_str( char *str, int slen );
+/* Prototypes applicable to routines used ONLY in this file. Declarations
+ * for invalidate_variable/mouse_xy_to_data_xy/view_data_edit_warn moved
+ * to view_internal.h (Phase 3e) -- each now also has a caller in
+ * viewer_controller.cc, though its definition stays here. beep() moved
+ * out entirely: its only caller, stepView(), moved to
+ * viewer_controller.cc too. */
+static void 		set_buttons( int to_state, ViewerUi &ui );
+static void 		draw_file_info( NCVar *var, ViewerSession &session, ViewerUi &ui );
 static float 		view_calc_minval_float( float *arr, size_t n );
 static float 		view_calc_maxval_float( float *arr, size_t n );
 static void 		strip_trailing_zeros( char *s );
@@ -100,7 +100,7 @@ static time_t new_frame_nframes[NFRAMES_RECORD];	/* NUMBER of new frames found a
  * buttons.
  */
 	int
-set_scan_variable( NCVar *var )
+set_scan_variable( NCVar *var, ViewerSession &session, ViewerUi &ui )
 {
 	View	*new_view, *old_view;
 	size_t	x_size, y_size, scaled_x_size, scaled_y_size;
@@ -108,6 +108,7 @@ set_scan_variable( NCVar *var )
 	int	changed_size, overlay2use;
 	float	range_x, range_y;
 	NCDim	*xdim, *ydim, *xdim_old, *xdim_new, *ydim_old, *ydim_new;
+	std::unique_ptr<ViewState> &view = session.activeView();
 
 	if( options.debug ) {
 		fprintf( stderr, "\n\n******************************************\nentering set_scan_variable with var=%s\n", var->name.c_str() );
@@ -116,24 +117,24 @@ set_scan_variable( NCVar *var )
 			fprintf( stderr, "dim=%ld size=%zu\n", i, var->size[i] );
 		}
 
-	in_set_cursor_busy();
+	ui.in_set_cursor_busy();
 
-	set_buttons( BUTTONS_ALL_ON );
-	unlock_plot();
+	set_buttons( BUTTONS_ALL_ON, ui );
+	ui.unlock_plot();
 
 	if( (view == NULL) || (view->x_axis_id == -1) || (view->y_axis_id == -1)) {
 		/* A brand new variable to display!  Exciting! */
 		if( options.debug )
 			fprintf( stderr, "set_scan_variable: initializing view struct for new variable\n" );
-		init_view( &view, var );
-		set_blowup_type( options.blowup_type );
+		view.reset( View::create( var ) );
+		set_blowup_type( options.blowup_type, ui );
 
 		/* Figure out what axes to use for X, Y, and Time,
 		 * and set the current place based on those axes
 		 */
 		if( options.debug )
 			fprintf( stderr, "...determining scan axes (NEW)\n" );
-		determine_scan_axes( view, var, NULL );
+		view->determineScanAxes( var, nullptr );
 		if( options.debug )
 			fprintf( stderr, "...axes ids: scan=%d y=%d x=%d\n", 
 				view->scan_axis_id, view->y_axis_id, view->x_axis_id );
@@ -147,25 +148,32 @@ set_scan_variable( NCVar *var )
 			count[view->x_axis_id] = view->variable->size[view->x_axis_id];
 			if( options.debug )
 				fprintf( stderr, "set_scan_variable (A): about to call plot_XY_sc\n" );
-			plot_XY_sc( start.data(), count.data() );
-			in_popdown_2d_window();
-			in_set_cursor_normal();
+			view->plotXYSc( start.data(), count.data() );
+			/* Phase 13c: this early return used to skip
+			 * setScanButtons() entirely, so the toolbar kept
+			 * whatever state the PREVIOUS variable left it in --
+			 * BUTTONS_ALL_ON after any ordinary 2-D field. That is
+			 * why every 2-D-only control stayed pressable while a
+			 * 1-D variable was on screen. */
+			view->setScanButtons();
+			ui.in_popdown_2d_window();
+			ui.in_set_cursor_normal();
 			return(0);
 			}
 
 		if( options.debug )
 			fprintf( stderr, "...setting scan place (NEW)\n" );
-		set_scan_place     ( view, var, NULL );
+		view->setScanPlace( var, nullptr );
 
 		/* Is the current field inverted?  If so, flip it back */
 		if( options.debug )
 			fprintf( stderr, "...determining if inverted (NEW)\n" );
-		flip_if_inverted( view );
-	
+		view->flipIfInverted();
+
 		/* How big should we initially make the picture? */
 		if( options.debug )
 			fprintf( stderr, "...calculating blowup (NEW)\n" );
-		calculate_blowup( view, var, -99999 );	/* last val is flag meaning to do automatic calculation */
+		view->calculateBlowup( var, -99999 );	/* last val is flag meaning to do automatic calculation */
 
 		/* Save the blowup we are using in the var structure so we can
 		 * return to it later if we want
@@ -184,8 +192,8 @@ set_scan_variable( NCVar *var )
 		 */
 		if( options.debug )
 			fprintf( stderr, "set_scan_variable: initializing view struct for old variable\n" );
-		old_view = view;
-		init_view( &new_view, var );
+		old_view = view.get();
+		new_view = View::create( var );
 
 		/* Figure out what axes to use for X, Y, and Time,
 		 * and set the current place based on those axes and
@@ -193,9 +201,13 @@ set_scan_variable( NCVar *var )
 		 */
 		if( options.debug )
 			fprintf( stderr, "...determining scan axes (PREVIOUS)\n" );
-		determine_scan_axes( new_view, var, old_view );
+		new_view->determineScanAxes( var, old_view );
 		if( var->effective_dimensionality == 1 ) {
-			view = new_view;
+			/* unique_ptr::reset() deletes whatever it previously
+			 * owned (old_view, i.e. the pre-switch view) before
+			 * taking ownership of new_view -- this used to be a
+			 * bare pointer reassignment that leaked old_view. */
+			view.reset( new_view );
 			std::vector<size_t> start( view->variable->n_dims );
 			std::vector<size_t> count( view->variable->n_dims );
 			for( i=0; i<view->variable->n_dims; i++ ) {
@@ -205,12 +217,19 @@ set_scan_variable( NCVar *var )
 			count[view->x_axis_id] = view->variable->size[view->x_axis_id];
 			if( options.debug )
 				fprintf( stderr, "set_scan_variable (B): about to call plot_XY_sc\n" );
-			plot_XY_sc( start.data(), count.data() );
-			in_popdown_2d_window();
-			in_set_cursor_normal();
+			view->plotXYSc( start.data(), count.data() );
+			/* Phase 13c: this early return used to skip
+			 * setScanButtons() entirely, so the toolbar kept
+			 * whatever state the PREVIOUS variable left it in --
+			 * BUTTONS_ALL_ON after any ordinary 2-D field. That is
+			 * why every 2-D-only control stayed pressable while a
+			 * 1-D variable was on screen. */
+			view->setScanButtons();
+			ui.in_popdown_2d_window();
+			ui.in_set_cursor_normal();
 			return(0);
 			}
-		set_scan_place( new_view, var, old_view );
+		new_view->setScanPlace( var, old_view );
 
 		/* Calculate new blowup.  If the old var was using the same display dimensions
 		 * as the new var is using, then don't modify the current blowup.  Otherwise,
@@ -232,7 +251,7 @@ set_scan_variable( NCVar *var )
 			if( options.debug )
 				fprintf( stderr, "...axis change, recalculating blowup; old, new X dim=%s, %s; old, new Y dim=%s, %s\n",
 					xdim_old->name.c_str(), xdim_new->name.c_str(), ydim_old->name.c_str(), ydim_new->name.c_str() );
-			calculate_blowup( new_view, var, var->user_set_blowup );
+			new_view->calculateBlowup( var, var->user_set_blowup );
 			/* Save the blowup we are using in the var structure so we can
 			 * return to it later if we want
 			 */
@@ -250,42 +269,41 @@ set_scan_variable( NCVar *var )
 		 * heap-backed members (equivalent to the vector clear()s this
 		 * used to do here) and intentionally leaked the malloc'd View
 		 * struct itself on every variable switch. Nothing holds a
-		 * reference to old_view past this point (view is reassigned
-		 * to new_view immediately below), so there's no parity reason
-		 * left to keep leaking it. */
-		delete old_view;
-
-		view = new_view;
+		 * reference to old_view past this point, and view.reset()
+		 * deletes it (the object it currently owns) before taking
+		 * ownership of new_view, so there's no parity reason left to
+		 * keep leaking it. */
+		view.reset( new_view );
 		}
 
 	/* Set the tape-recorder style buttons to enable or disabled
 	 * state, as appropriate for the selected variable and dimensions.
 	 */
-	set_scan_buttons( view );
+	view->setScanButtons();
 
 	/* Allocate storage space for the data */
-	alloc_view_storage( view );
+	view->allocStorage();
 
 	/* Actually read the data in from the file */
 	if( options.debug )
 		fprintf( stderr, "...reading data from file\n" );
-	fill_view_data( view );
+	view->fillViewData();
 
 	if( options.save_frames == true )
 		{
 		if( options.debug )
 			fprintf( stderr, "calling init_saveframes from set_scan_variable\n" );
-		init_saveframes();
+		view->initSaveframes();
 		}
 
 	/* Set the min and maxes of the data */
 	if( !view->variable->have_set_range )
-		init_min_max( var );
+		g_app.session.dataset().initMinMax( var, ui );
 
 	/* If we are automatically putting on overlays, do so now */
 	xdim = view->variable->dim[view->x_axis_id].get();
 	ydim = view->variable->dim[view->y_axis_id].get();
-	if( options.auto_overlay && in_report_auto_overlay() && xdim->is_lon && ydim->is_lat ) {
+	if( options.auto_overlay && ui.in_report_auto_overlay() && xdim->is_lon && ydim->is_lat ) {
 		/* Only put overlay on automatically if range is big enough that
 		 * the coastlines can be recognized. 
 		 */
@@ -297,39 +315,40 @@ set_scan_variable( NCVar *var )
 			overlay2use = OVERLAY_P08DEG;
 		else
 			overlay2use = -1;
-		if( (overlay2use != -1) && (! view_data_has_missing( view )))
+		if( (overlay2use != -1) && (! view->hasMissingData()))
 			do_overlay(overlay2use,NULL,true);
 		}
 
 	/* Convert the data to pixels; return on error condition */
 	if( options.debug )
 		fprintf( stderr, "...converting data to pixels\n" );
-	lockout_view_changes = true;
-	if( data_to_pixels( view ) < 0 ) {
-		in_timer_clear();
+	{
+	LockoutViewChangesGuard lockout_guard;
+	if( view->dataToPixels() < 0 ) {
+		ui.in_timer_clear();
 		if( view->variable->global_min == view->variable->global_max )
-			invalidate_variable( view->variable );
+			invalidate_variable( view->variable, session, ui );
 		return( -1 );
 		}
-	lockout_view_changes = false;
+	}
 
 	/* put variable and file information on the screen */
 	if( options.debug )
 		fprintf( stderr, "...putting var & file info on screen\n" );
-	draw_file_info( var );
+	draw_file_info( var, session, ui );
 
 	/* put the dimension information on the screen */
 	if( options.debug )
 		fprintf( stderr, "...putting dimension info on screen\n" );
-	redraw_dimension_info();
+	view->redrawDimensionInfo();
 
 	/* Draw the frame info on the screen */
 	if( options.debug )
 		fprintf( stderr, "...putting frame info on screen, scan_axis_id=%d\n", view->scan_axis_id );
 	if( view->scan_axis_id == -1 ) 
-		set_scan_view( 0L );
+		view->scanToPlace( 0L );
 	else
-		set_scan_view( view->var_place[view->scan_axis_id] );
+		view->scanToPlace( view->var_place[view->scan_axis_id] );
 
 	/* Actually draw the color contour map of the data! */
 	if( options.debug )
@@ -337,37 +356,78 @@ set_scan_variable( NCVar *var )
 	x_size = view->variable->size[view->x_axis_id];
 	y_size = view->variable->size[view->y_axis_id];
 	view_get_scaled_size( options.blowup, x_size, y_size, &scaled_x_size, &scaled_y_size );
-	changed_size = in_set_2d_size( scaled_x_size, scaled_y_size );
+	changed_size = ui.in_set_2d_size( scaled_x_size, scaled_y_size );
 	/* If we increased in size then we don't need to redraw,
 	 * because an expansion generates an expose event, which
 	 * is registered to call change_view.
 	 */
-	if( changed_size < 1 ) 
-	 	change_view(0,FRAMES);
+	if( changed_size < 1 )
+	 	g_app.controller.stepView(0,FRAMES);
 
 	/* Pop up the window if we are going to use it. */
-	in_popup_2d_window();
+	ui.in_popup_2d_window();
 
-	in_set_cursor_normal();
+	ui.in_set_cursor_normal();
 
 	if( options.debug )
 		fprintf( stderr, "...recomputing colorbar\n" );
-	view_recompute_colorbar();
+	g_app.controller.recomputeColorbar();
 
 	if( options.debug )
 		fprintf( stderr, "exiting set_scan_variable.\n" );
 	return( 0 );
 }
 
-/**************************************************************************************/
-	static void
-set_scan_buttons( View *local_view )
+/*****************************************************************************
+ * Vector through this routine when a new display variable has been
+ * selected by the user, by pressing some sort of button. Formerly
+ * interface_glue.cc, dissolved into the file that owns set_scan_variable().
+ */
+void
+in_variable_selected( const char *var_name )
 {
-	static int	set_state;
+	NCVar	*var;
+
+	if( (var = g_app.session.dataset().findVariable( var_name )) == NULL ) {
+		fprintf( stderr, "ncview: in_variable_selected: internal error " );
+		fprintf( stderr, "no variable with name >%s< found on variable list\n",
+					var_name );
+		exit( -1 );
+		}
+
+	/* Fixed seam entry point (called by ui/ code by this exact
+	 * free-function name), so it's the boundary that still reaches
+	 * g_app.session/g_app.ui explicitly -- set_scan_variable() itself,
+	 * one call away, no longer does (Phase 11a). */
+	set_scan_variable( var, g_app.session, *g_app.ui );
+}
+
+/**************************************************************************************/
+	void
+View::setScanButtons()
+{
+	View *local_view = this;
+	ViewerUi	&ui = *g_app.ui;
+	/* Phase 13c: was `static int` -- same leaked-static class Phases 11h
+	 * and 12c cleaned up elsewhere. Harmless in practice only because it
+	 * is assigned unconditionally on the line below before any read. */
+	int		set_state;
 	const char	*label    = NULL;
 	char		scalar_coord_str[1024];
 
 	set_state = BUTTONS_ALL_ON;
+
+	/* Phase 13c: no 2-D picture at all (a 1-D variable, or the degrade
+	 * paths that leave every axis id -1). Checked first and returned from
+	 * directly, because the two scan-axis cases below would only narrow a
+	 * state that is already a strict superset of them. */
+	if( ! local_view->has2dAxes() ) {
+		set_buttons( BUTTONS_2D_OFF, ui );
+		ui.in_set_label( Label::ScanPlace, "No 2-D display axes" );
+		local_view->constructScalarCoordStr( scalar_coord_str, 1020 );
+		ui.in_set_label( Label::ScalarDims, scalar_coord_str );
+		return;
+		}
 
 	/* If there is no scan axis, then disable the buttons
 	 * which access it.
@@ -378,7 +438,7 @@ set_scan_buttons( View *local_view )
 		}
 
 	/* If the scan axis is currently appearing as the X or
-	 * Y axis, then disable the buttons which step the 
+	 * Y axis, then disable the buttons which step the
 	 * scan axis (since they are ALL being displayed at
 	 * the moment!)
 	 */
@@ -388,128 +448,21 @@ set_scan_buttons( View *local_view )
 		label = "Scan axis is displayed";
 		}
 
-	set_buttons( set_state );
-	in_set_label( Label::ScanPlace, label );
+	set_buttons( set_state, ui );
+	ui.in_set_label( Label::ScanPlace, label );
 
-	view_construct_scalar_coord_str( scalar_coord_str, 1020 );
-	in_set_label( Label::ScalarDims, scalar_coord_str );
-}
-
-/**************************************************************************************
- * Report current size of scan azis
- */
-	long 
-view_current_nt()
-{
-	size_t		size;
-
-	if( view == NULL ) 
-		return( 0 );
-
-	if( view->variable == NULL )
-		return( 0 );
-
-	if( view->variable->size.empty() )
-		return( 0 );
-
-	/* No scan axis (e.g. a purely 2-D variable, or a modifier-based
-	 * navigation call on one) -- upstream indexed size[-1] here
-	 * unconditionally. There's exactly one frame in that case. */
-	if( view->scan_axis_id == -1 )
-		return( 1 );
-
-	size = view->variable->size[view->scan_axis_id];
-
-	return( size );
-}
-
-/********************************************************************************
- * Change the view we currently have on the data; i.e., scan along
- * the scan-axis.  'interpretation' can be either FRAMES or PERCENT, and
- * indicates how in interpret the passed delta value.
- */
-	int
-change_view( int delta, int interpretation )
-{
-	size_t	size;
-	long	place;
-	float	provisional_delta;
-
-	if( view == NULL )	/* This happens because this routine is called    */
-		return(0);	/* when Expose events are generated, and one is   */
-				/* generated before the view has been initialized */
-
-	if( delta != 0 ) {
-		if( view->data_status == ViewDataStatus::Edited ) {
-			fprintf( stderr, "warning! flushing changes!\n" );
-			}
-		view->data_status = ViewDataStatus::Invalid;
-		}
-
-	/* Apply the skip */
-	if( interpretation == FRAMES )
-		delta *= view->skip;
-
-	if(view->scan_axis_id == -1) {
-		if( delta == 0 ) {
-			view_draw( false, false );
-			return(0);
-			}
-		else
-			{
-			fprintf( stderr, 
-				"called change_view with no scan_axis\n" );
-			exit( -1 );
-			}
-		}
-
-	if( interpretation == PERCENT ) {
-		/* Delta is in percent of total size */
-		size              = view->variable->size[view->scan_axis_id];
-		provisional_delta = (float)size * (float)delta/100.0;
-		if( (int)provisional_delta == 0 ) {
-			if( delta < 0 )
-				delta = -1;
-			else
-				delta = 1;
-			}
-		else
-			delta = (int)provisional_delta;
-		}
-
-	place = view->var_place[view->scan_axis_id] + delta;
-	size  = view->variable->size[view->scan_axis_id];
-
-	/* Have we incremented past the maximum allowed value?
-	 * If we have, then reset to ZERO, not just (size modulo
-	 * step), so that when stepping with a skip > 1, we can
-	 * save frames and come back to the same frames in the
-	 * framestore.
-	 */
-	if( place >= (long)size ) {
-		place = 0L;
-		if( options.beep_on_restart )
-			beep();
-		if( options.stop_on_restart ) {
-			do_pause( Modifier::M1 );
-			return(0);
-			}
-		}
-		
-	/* Have we decremented below the minimum allowed value? */
-	if( place < 0L )
-		place = size - 1L;
-
-	set_scan_view( place );
-	return( view_draw( true, false ) );
+	local_view->constructScalarCoordStr( scalar_coord_str, 1020 );
+	ui.in_set_label( Label::ScalarDims, scalar_coord_str );
 }
 
 /********************************************************************************
  * Set the time place of the view to the specified location.
  */
 	void
-set_scan_view( size_t scan_place )
+View::scanToPlace( size_t scan_place )
 {
+	View *view = this;
+	ViewerUi	&ui = *g_app.ui;
 	char	temp_string[1024], scalar_coord_str[1024];
 	std::string view_place;
 	size_t	size;
@@ -541,7 +494,7 @@ set_scan_view( size_t scan_place )
 	view_place = "frame " + std::to_string(scan_place+1) + "/" + std::to_string(size) + " ";
 
 	/* type is the data type of the dimension--can be float or character */
-	type = fi_dim_value( view->variable, view->scan_axis_id, scan_place, &new_dimval,
+	type = g_app.session.dataset().dimValue( view->variable, view->scan_axis_id, scan_place, &new_dimval,
 			temp_string, &has_bounds, &bound_min, &bound_max, view->var_place.data() );
 	if( type == NC_DOUBLE ) {
 		if( dim->timelike && options.t_conv ) {
@@ -586,206 +539,39 @@ set_scan_view( size_t scan_place )
 		   * is already in variable "temp_string"
 		   */
 		}
-	in_set_label( Label::ScanPlace, view_place.c_str() );
-	in_set_cur_dim_value( dim_name, temp_string );
+	ui.in_set_label( Label::ScanPlace, view_place.c_str() );
+	ui.in_set_cur_dim_value( dim_name, temp_string );
 	view->data_status = ViewDataStatus::Invalid;
 	if( options.want_extra_info ) {
-		in_set_label( Label::CcInfo2, temp_string );
+		ui.in_set_label( Label::CcInfo2, temp_string );
 		}
 
 	/* Construct string showing the values of the scalar coordinates
-	 * for this variable, if any 
+	 * for this variable, if any
 	 */
-	view_construct_scalar_coord_str( scalar_coord_str, 1020 );
-	in_set_label( Label::ScalarDims, scalar_coord_str );
-}
-
-/********************************************************************************
- * draw the current view onto the display
- */
-	int
-view_draw( int allow_framestore_usage, int force_range_to_frame )
-{
-	size_t		i;
-	size_t		x_size, y_size, scan_size, scaled_x_size, scaled_y_size, framesize, frameno;
-	static size_t	last_x_size=0, last_y_size=0;
-	int		must_recalc_range;
-	float		min, max, dat;
-
-	/* The reason why we have to lockout the possiblity that this
-	 * routine is called WHILE it is executing is tricky.  The 
-	 * 'data_to_pixels' call, below and elsewhere, can result in a modal
-	 * dialog being popped up, but the ccontour window can still
-	 * get 'expose' events.  In that case multiple modal dialogs would
-	 * be popped up, to conflict at random, unless there were some
-	 * way of locking out entry to this subroutine while it is actively
-	 * being executed or the other modal dialogs are popped up.
-	 */
-	if( lockout_view_changes )
-		return(0);
-	lockout_view_changes = true;
-
-	/* These can happen because this routine is called when the ccontour
-	 * window gets 'expose' events, which happens on program startup,
-	 * before the view has been initialized.
-	 */
-	if( (view == NULL) || (view->data.empty())) {
-		lockout_view_changes = false;
-		return(0);
-		}
-
-	x_size = view->variable->size[view->x_axis_id];
-	y_size = view->variable->size[view->y_axis_id];
-
-	must_recalc_range = force_range_to_frame || options.autoscale;
-
-	view_get_scaled_size( options.blowup, x_size, y_size, &scaled_x_size, &scaled_y_size );
-
-	framesize = scaled_x_size * scaled_y_size;
-	if( view->scan_axis_id == -1 )
-		frameno = 0;
-	else
-		frameno = view->var_place[view->scan_axis_id];
-
-	if( options.debug ) {
-		fprintf( stderr, "in view_draw:\n" );
-		fprintf( stderr, "	x_size, y_size:%zu %zu\n",
-						x_size, y_size );
-		fprintf( stderr, "	scan_axis_id:%d\n",
-						view->scan_axis_id);
-		fprintf( stderr, "	scan_place:%zu\n",
-						frameno );
-		}
-
-	/* Is this frame stored in the framestore? Never true under
-	 * -autoscale: upstream relied on its recalc-and-invalidate block
-	 * running *before* this check (invalidating whatever's cached here
-	 * on every autoscale draw, so this check would always miss while
-	 * autoscale is on). This port moved that block below, after
-	 * fill_view_data(), so it recomputes from the freshly-loaded frame
-	 * instead of upstream's stale-until-next-frame data -- but that
-	 * leaves a window where a still-cached, currently-displayed frame
-	 * (e.g. redrawn right after toggling autoscale on in the Options
-	 * dialog) gets served from the cache before the invalidate below
-	 * ever runs. Excluding autoscale here closes that window the same
-	 * way upstream's ordering did.
-	 */
-	if( framestore.valid && allow_framestore_usage && !options.autoscale ) {
-		if( framestore.frame_valid[frameno] == true ) {
-			if( options.debug )
-				printf( "drawing from framestore...\n" );
-			in_draw_2d_field( (framestore.frame.data() + frameno*framesize),
-				scaled_x_size, scaled_y_size, frameno );
-			lockout_view_changes = false;
-
-			if( view->scan_axis_id != -1 ) {
-				scan_size  = view->variable->size[view->scan_axis_id];
-				if( (frameno == (scan_size-1)) && (which_button_pressed() == Button::Pause)) {
-					in_timer_set( [](){ view_check_new_data(0); }, 1000L );
-					}
-				}
-			return(0);
-			}
-		}
-
-	if( view->data_status == ViewDataStatus::Invalid ) {
-		if( options.debug )
-			printf( "Reading data to contour...\n" );
-		fill_view_data( view );
-		}
-	else
-		{
-		if( options.debug )
-			printf( "NOT reading data to contour, since data is valid (%d)\n", static_cast<int>(view->data_status) );
-		}
-
-	/* If we need to adjust the range to the current frame, then do so.
-	 * Must run after fill_view_data() above, so it sees the just-loaded
-	 * slice rather than whatever the previous frame left in view->data.
-	 */
-	if( must_recalc_range ) {
-		min = 1.0e35;
-		max = -min;
-
-		for( i=0; i<x_size*y_size; i++ ) {
-			dat = view->data[i];
-			if( dat != dat )
-				dat = view->variable->fill_value;
-			if( ! close_enough( dat, view->variable->fill_value) && (dat != FILL_FLOAT)) {
-				if( dat > max )
-					max = dat;
-				if( dat < min )
-					min = dat;
-				}
-			}
-
-		view->variable->user_min = min;
-		view->variable->user_max = max;
-		set_range_labels( min, max );
-		view->data_status = ViewDataStatus::Invalid;
-		invalidate_all_saveframes();	/* note we invalidate all frames, so even if allow_framestore_useage is true, it won't happen */
-		view_recompute_colorbar();
-		}
-
-	if( options.debug )
-		printf( "Calling data_to_pixels...\n" );
-	if( data_to_pixels( view ) < 0 ) {
-		in_timer_clear();
-		if( view->variable->global_min == view->variable->global_max )
-			invalidate_variable( view->variable );
-		lockout_view_changes = false;
-		return( -1 );
-		}
-
-	if( (last_x_size != scaled_x_size) ||
-	    (last_y_size != scaled_y_size)) {
-		last_x_size = scaled_x_size;
-		last_y_size = scaled_y_size;
-		in_set_2d_size  ( scaled_x_size, scaled_y_size );
-		}
-
-	if( options.debug )
-		printf( "Calling draw_2d_field...\n" );
-	in_draw_2d_field( view->pixels.data(), scaled_x_size, scaled_y_size, frameno );
-
-	if( framestore.valid == true ) {
-		for( i=0; i<framesize; i++ )
-			framestore.frame[frameno*framesize + i] = view->pixels[i];
-		framestore.frame_valid[frameno] = true;
-		}
-
-	/* If we just drew the last time entry for this var, then
-	 * set up a callback that waits 1 second and checks for
-	 * the var having new data in it.
-	 */
-	if( view->scan_axis_id != -1 ) {
-		scan_size  = view->variable->size[view->scan_axis_id];
-		if( (frameno == (scan_size-1)) && (which_button_pressed() == Button::Pause)) {
-			in_timer_set( [](){ view_check_new_data(0); }, 1000L );
-			}
-		}
-
-	lockout_view_changes = false;
-	return( 0 );
+	view->constructScalarCoordStr( scalar_coord_str, 1020 );
+	ui.in_set_label( Label::ScalarDims, scalar_coord_str );
 }
 
 /********************************************************************************
  * Checks if the file has grown since we last saw it
  */
 	void
-view_check_new_data( int unused )
+View::checkNewData( int unused )
 {
+	View *view = this;
+	ViewerUi	&ui = *g_app.ui;
 	size_t 	file_var_size[MAX_NC_DIMS], *t, n_other;
 	size_t	i;
-	int	has_grown, t_ncid, timelike_index;
-	size_t	dt, nt_new, n_scan_entries, n_extra_frames, storage_size, old_nt;
+	int	has_grown, timelike_index;
+	size_t	dt, nt_new, n_scan_entries, n_extra_frames;
 	char	message[1024], rate_units[50];
 	time_t	tt;
 	long	nframes_tot, delta_time;
 	float	rate_per_sec, rate_per_min, rate_per_hour, rate_per_day, rate,
 		min, max, *data, avg;
 
-	in_timer_clear();
+	ui.in_timer_clear();
 
 	timelike_index = 0;
 
@@ -796,13 +582,38 @@ view_check_new_data( int unused )
 	if( view->scan_axis_id != timelike_index ) 	/* in netcdf v3, simple way to check for time dimension */
 		return;
 
-	/* Get size of the var in the last file */
-	t_ncid = netcdf_fi_initialize( const_cast<char *>(view->variable->files.back()->filename.c_str()) );
-	t = netcdf_fi_var_size( t_ncid, const_cast<char *>(view->variable->name.c_str()) );
+	/* Get size of the var in the last file. Deliberately NOT migrated onto
+	 * the tracked NetCDFFile* in Phase 7b: this opens a second, throwaway
+	 * fileid for the same path to see the on-disk file's CURRENT size --
+	 * the tracked object's fileid is the stale, already-open handle whose
+	 * growth is exactly what's being checked for.
+	 *
+	 * Phase 12d: was netcdf_fi_initialize() + a raw nc_close() -- but
+	 * netcdf_fi_initialize() exit()s the whole process if the reopen
+	 * fails, which is exactly the wrong behavior for a once-a-second
+	 * background poll: a file that's been deleted, replaced, or is
+	 * briefly unreadable (another process mid-rewrite) shouldn't kill a
+	 * live ncview session. NetCDFFile::open() (Phase 6) is the same
+	 * nc_open() call with a testable std::optional failure instead, and
+	 * its destructor closes the fileid automatically, so the raw
+	 * nc_close() below is gone too, not just relocated. On failure,
+	 * report once and stop watching this variable for growth -- not
+	 * re-arm and retry every second, which would mean a dialog storm if
+	 * the file stays gone (matches View::initSaveframes()'s "degrade
+	 * gracefully, don't nag" precedent elsewhere in this file). */
+	int t_nc_errcode = NC_NOERR;
+	auto t_file = NetCDFFile::open( view->variable->files.back()->filename, &t_nc_errcode );
+	if( ! t_file.has_value() ) {
+		snprintf( message, sizeof(message),
+			"Can't re-open \"%s\" to check for new data (%s); no longer watching this variable for growth.",
+			view->variable->files.back()->filename.c_str(), nc_strerror( t_nc_errcode ) );
+		in_error( message );
+		return;
+		}
+	t = t_file->varSize( const_cast<char *>(view->variable->name.c_str()) );
 	for( i=0; i<static_cast<size_t>(view->variable->n_dims); i++ )
 		file_var_size[i] = t[i];
 	free( t );
-	nc_close( t_ncid );
 
 	has_grown = 0;
 	if( file_var_size[ timelike_index ] > view->variable->files.back().get()->var_size[ timelike_index ] ) {
@@ -810,7 +621,7 @@ view_check_new_data( int unused )
 		}
 
 	if( ! has_grown ) {
-		in_timer_set( [](){ view_check_new_data(0); }, 1000L );
+		ui.in_timer_set( [](){ ::view->checkNewData(0); }, 1000L );
 		return;
 		}
 
@@ -865,27 +676,19 @@ view_check_new_data( int unused )
 			if( message[i] == 10 )
 				message[i] = ' ';
 		}
-	in_set_label( Label::Title, message );
+	ui.in_set_label( Label::Title, message );
 
 	/* See if we need to reallocate the framestore */
-	if( nt_new >= framestore.nt ) {
-		old_nt = framestore.nt;
+	if( nt_new >= g_app.session.frameCache().nt() ) {
 		n_scan_entries = view->variable->size[view->scan_axis_id];
 		n_extra_frames = floor( n_scan_entries * 0.2 ) + 1;
 		if( n_extra_frames < 25 )
 			n_extra_frames = 25;
-		framestore.nt = nt_new + n_extra_frames;
-		storage_size  = framestore.nx * framestore.ny * framestore.nt;
 
 		if( options.debug )
-			printf( "reallocating framestore to new nt=%zu\n", framestore.nt );
+			printf( "reallocating framestore to new nt=%zu\n", nt_new + n_extra_frames );
 
-		framestore.frame.resize( storage_size );
-		framestore.frame_valid.resize( framestore.nt );
-
-		/* Initialize to NOT a valid frame for the new frames */
-		for( i=old_nt; i<framestore.nt; i++ )
-			framestore.frame_valid[i] = false;
+		g_app.session.frameCache().growTo( nt_new + n_extra_frames );
 		}
 
 	view->variable->size[ timelike_index ] = nt_new;
@@ -893,7 +696,7 @@ view_check_new_data( int unused )
 
 	/* The newly appended timesteps all live in the last (growing) file;
 	 * keep timestep_2_fdb (built once, up front, in
-	 * cache_scalar_coord_info()) in sync so looking up one of them
+	 * Dataset::cacheScalarCoordInfo()) in sync so looking up one of them
 	 * doesn't index past its old, now-too-short length.
 	 */
 	{
@@ -903,7 +706,7 @@ view_check_new_data( int unused )
 	}
 
 	/* Resync so we will read the last time entry */
-	nc_sync( view->variable->files.back().get()->id );
+	nc_sync( view->variable->files.back().get()->id() );
 
 	/* Special check: if we were started with no range in the variable,
 	 * but now we have one, then reset the displayed range
@@ -915,7 +718,7 @@ view_check_new_data( int unused )
 				n_other *= view->variable->size[i];
 		std::vector<float> data_buf( n_other );
 		data = data_buf.data();
-		get_min_max_onestep( view->variable, n_other, nt_new, data, &min, &max, 0 );
+		g_app.session.dataset().getMinMaxOnestep( view->variable, n_other, nt_new, data, &min, &max, 0 );
 		if( min != max ) {
 			view->variable->auto_set_no_range = 0;
 			if( (min < 0) && (max > 0)) {
@@ -957,10 +760,10 @@ view_check_new_data( int unused )
 				
 			view->variable->user_min = min;
 			view->variable->user_max = max;
-			set_range_labels( min, max );
+			view->setRangeLabels( min, max );
 			view->data_status = ViewDataStatus::Invalid;
-			invalidate_all_saveframes();
-			view_recompute_colorbar();
+			g_app.session.invalidateAllSaveframes();
+			g_app.controller.recomputeColorbar();
 			}
 		}
 
@@ -968,7 +771,7 @@ view_check_new_data( int unused )
 	 * NOTE that this ALSO sets the timer to call this
 	 * routine again as a side effect
 	 */
-	change_view( dt, FRAMES );
+	g_app.controller.stepView( dt, FRAMES );
 }
 
 /********************************************************************************
@@ -982,35 +785,48 @@ view_check_new_data( int unused )
  * the previous variable was only a 1-d variable; in that case we do not
  * want to limit ourselves to its restrictions if we can avoid them.
  */
-	static void
-determine_scan_axes( View *view, NCVar *var, View *old_view )
+	void
+View::determineScanAxes( NCVar *var, View *old_view )
 {
-	initial_determine_scan_axes( view, var );
+	View *view = this;
 
-	if( view->scan_axis_id != -1 ) 
+	initialDetermineScanAxes( var );
+
+	if( view->scan_axis_id != -1 )
 		view->plot_XY_axis = view->scan_axis_id;
-	else if( view->x_axis_id != -1 ) 
+	else if( view->x_axis_id != -1 )
 		view->plot_XY_axis = view->x_axis_id;
 	/* We can't do an XY plot of dimensions that have a count
 	 * of one.  In that case, try to set it to something else.
+	 *
+	 * Phase 13d: the plot_XY_axis != -1 half is new. View::create() sets
+	 * plot_XY_axis = -1, and neither branch above assigns it if
+	 * initialDetermineScanAxes() left both scan_axis_id and x_axis_id at
+	 * -1 -- which its own degrade paths do. size[] is a std::vector, so
+	 * size[-1] is size[SIZE_MAX], an out-of-bounds read of the eight heap
+	 * bytes preceding the buffer; whether the block below then ran at all
+	 * came down to what was in them. With no axis to plot along there is
+	 * nothing to reconsider, so leaving plot_XY_axis at -1 is correct --
+	 * ViewerController::plotXY() already reports that case.
 	 */
-	if( view->variable->size[view->plot_XY_axis] == 1 ) {
-		if( (view->scan_axis_id != -1) &&  
+	if( (view->plot_XY_axis != -1) &&
+	    (view->variable->size[view->plot_XY_axis] == 1) ) {
+		if( (view->scan_axis_id != -1) &&
 		    (view->variable->size[view->scan_axis_id] > 1))
 			view->plot_XY_axis = view->scan_axis_id;
 
-		else if( (view->x_axis_id != -1) &&  
+		else if( (view->x_axis_id != -1) &&
 		    (view->variable->size[view->x_axis_id] > 1))
 			view->plot_XY_axis = view->x_axis_id;
 
-		else if( (view->y_axis_id != -1) &&  
+		else if( (view->y_axis_id != -1) &&
 		    (view->variable->size[view->y_axis_id] > 1))
 			view->plot_XY_axis = view->y_axis_id;
 		}
 
 	if( (old_view != NULL) && (old_view->variable->effective_dimensionality > 1))
 		{
-		re_determine_scan_axes( view, var, old_view );
+		reDetermineScanAxes( var, old_view );
 
 		/* We can exit the above code with the X and Y dimensions
 		 * the same, if the newly picked variable has less dimensions than
@@ -1019,7 +835,7 @@ determine_scan_axes( View *view, NCVar *var, View *old_view )
 		 * way if this is the case.
 		 */
 		if( view->x_axis_id == view->y_axis_id )
-			initial_determine_scan_axes( view, var );
+			initialDetermineScanAxes( var );
 
 		/* Don't let an axis be BOTH scan AND x or y */
 		if( view->x_axis_id == view->scan_axis_id )
@@ -1027,26 +843,45 @@ determine_scan_axes( View *view, NCVar *var, View *old_view )
 		if( view->y_axis_id == view->scan_axis_id )
 			view->scan_axis_id = -1;
 
-		/* Final sanity checks! */
-		if( (view->x_axis_id == -1) || 
+		/* Final sanity checks!
+		 *
+		 * Phase 13d: the bounds comparisons were `>`, off by one -- a
+		 * valid axis id is 0..n_dims-1, so an id of exactly n_dims (which
+		 * reDetermineScanAxes() can install, since it maps ids between
+		 * two different variables' dimension lists) passed the check and
+		 * then indexed size[]/dim[] one element past the end. Also note
+		 * this only *re-runs* the fallback; it deliberately does not
+		 * re-check afterwards, because initialDetermineScanAxes() is
+		 * itself the authority on what this variable's axes are -- if it
+		 * comes back with -1s, that is the honest answer and
+		 * View::has2dAxes() (Phase 13b) is what the rest of the code
+		 * consults about it.
+		 */
+		if( (view->x_axis_id == -1) ||
 		    (view->y_axis_id == -1) ||
-		    (view->x_axis_id > view->variable->n_dims) ||
-		    (view->y_axis_id > view->variable->n_dims))
-			initial_determine_scan_axes( view, var );
+		    (view->x_axis_id >= view->variable->n_dims) ||
+		    (view->y_axis_id >= view->variable->n_dims))
+			initialDetermineScanAxes( var );
 		}
 }
 
 /**************************************************************************************/
-	static void
-initial_determine_scan_axes( View *view, NCVar *var )
+	void
+View::initialDetermineScanAxes( NCVar *var )
 {
+	View *view = this;
 	Stringlist	*dimlist;
 	int		n_dims;
+	/* Every fi_scannable_dims()/fi_dim_name_to_id() call below used to
+	 * re-derive a bare fileid via ->files.front().get()->id() just to hand
+	 * it to a free-function dispatcher; both are now NetCDFFile methods
+	 * (Phase 6), so the owning object itself is enough. */
+	NetCDFFile *file0 = var->files.front()->file;
 
 	if( options.debug ) fprintf( stderr, "initial_determine_scan_axes: entering for var %s\n", const_cast<char *>(var->name.c_str()) );
 
 	/* Get a list of all possible scannable dimensions */
-	dimlist = fi_scannable_dims( var->files.front().get()->id, const_cast<char *>(var->name.c_str()) );
+	dimlist = file0->scannableDims( const_cast<char *>(var->name.c_str()) );
 
 	if( options.debug ) {
 		fprintf( stderr, "initial_determine_scan_axes: scannable dims:\n" );
@@ -1054,37 +889,60 @@ initial_determine_scan_axes( View *view, NCVar *var )
 		}
 
 	/* For now, just pick the last two to be the Y and X axes.
-	 */ 
+	 */
 	n_dims = stringlist_len( dimlist );
 	switch( n_dims ) {
 		case 1:
 			view->scan_axis_id = -1;
 			view->y_axis_id    = -1;
-			view->x_axis_id    = fi_dim_name_to_id(
-					var->files.front().get()->id,
+			view->x_axis_id    = file0->dimNameToId(
 					const_cast<char *>(var->name.c_str()),
 					(char *)(*dimlist)[0].string.c_str() );
+			/* Phase 13d: case 2 and default below got this check in
+			 * Phase 12e; case 1 was overlooked, presumably because it
+			 * already sets two of the three ids to -1 by design and so
+			 * looked like it was handling the sentinel. It wasn't: an
+			 * unresolved x_axis_id here is the one that leaves
+			 * set_scan_variable()'s 1-D path indexing count[-1] and
+			 * size[-1] (view.cc, both plot-and-return blocks), an
+			 * out-of-bounds heap write. Same report-and-degrade shape as
+			 * its siblings. */
+			if( view->x_axis_id == -1 ) {
+				fprintf( stderr, "initial_determine_scan_axes: internal error: dim >%s< was indicated by routine fi_scannable_dims to be a scannable dim for var >%s<, but routine fi_dim_name_to_id did not find that dim for the var\n",
+					(*dimlist)[0].string.c_str(), const_cast<char *>(var->name.c_str()) );
+				in_error( "Internal error determining this variable's axes; it may not display correctly." );
+				view->scan_axis_id = view->y_axis_id = view->x_axis_id = -1;
+				return;
+				}
 			break;
 
 		case 2:
 			view->scan_axis_id = -1;
-			view->y_axis_id    = fi_dim_name_to_id(
-					var->files.front().get()->id,
+			view->y_axis_id    = file0->dimNameToId(
 					const_cast<char *>(var->name.c_str()),
 					(char *)(*dimlist)[0].string.c_str() );
+			/* Phase 12e: these 5 checks used to exit(-1) -- an internal
+			 * inconsistency between scannableDims() and dimNameToId(),
+			 * not a user-facing error, but killing the whole process is
+			 * worse than reporting and leaving this View with no usable
+			 * axes (matches case 1's own established "-1 is a valid
+			 * 'no axis' state" precedent just above). */
 			if( view->y_axis_id == -1 ) {
 				fprintf( stderr, "initial_determine_scan_axes: internal error: dim >%s< was indicated by routine fi_scannable_dims to be a scannable dim for var >%s<, but routine fi_dim_name_to_id did not find that dim for the var\n",
 					(*dimlist)[0].string.c_str(), const_cast<char *>(var->name.c_str()) );
-				exit(-1);
+				in_error( "Internal error determining this variable's axes; it may not display correctly." );
+				view->scan_axis_id = view->y_axis_id = view->x_axis_id = -1;
+				return;
 				}
-			view->x_axis_id    = fi_dim_name_to_id(
-					var->files.front().get()->id,
+			view->x_axis_id    = file0->dimNameToId(
 					const_cast<char *>(var->name.c_str()),
 					(char *)(*dimlist)[1].string.c_str() );
 			if( view->x_axis_id == -1 ) {
 				fprintf( stderr, "initial_determine_scan_axes: internal error: dim >%s< was indicated by routine fi_scannable_dims to be a scannable dim for var >%s<, but routine fi_dim_name_to_id did not find that dim for the var\n",
 					(*dimlist)[1].string.c_str(), const_cast<char *>(var->name.c_str()) );
-				exit(-1);
+				in_error( "Internal error determining this variable's axes; it may not display correctly." );
+				view->scan_axis_id = view->y_axis_id = view->x_axis_id = -1;
+				return;
 				}
 			break;
 
@@ -1093,33 +951,36 @@ initial_determine_scan_axes( View *view, NCVar *var )
 	 		* dims, because that one will be the 'time' dimension by netCDF
 	 		* standards. Y/X axes are the last two entries.
 	 		*/
-			view->scan_axis_id = fi_dim_name_to_id(
-					var->files.front().get()->id,
+			view->scan_axis_id = file0->dimNameToId(
 					const_cast<char *>(var->name.c_str()),
 					(char *)(*dimlist)[0].string.c_str() );
 			if( view->scan_axis_id == -1 ) {
 				fprintf( stderr, "initial_determine_scan_axes: internal error: dim >%s< was indicated by routine fi_scannable_dims to be a scannable dim for var >%s<, but routine fi_dim_name_to_id did not find that dim for the var\n",
 					(*dimlist)[0].string.c_str(), const_cast<char *>(var->name.c_str()) );
-				exit(-1);
+				in_error( "Internal error determining this variable's axes; it may not display correctly." );
+				view->scan_axis_id = view->y_axis_id = view->x_axis_id = -1;
+				return;
 				}
 
-			view->y_axis_id    = fi_dim_name_to_id(
-					var->files.front().get()->id,
+			view->y_axis_id    = file0->dimNameToId(
 					const_cast<char *>(var->name.c_str()),
 					(char *)(*dimlist)[n_dims-2].string.c_str() );
 			if( view->y_axis_id == -1 ) {
 				fprintf( stderr, "initial_determine_scan_axes: internal error: dim >%s< was indicated by routine fi_scannable_dims to be a scannable dim for var >%s<, but routine fi_dim_name_to_id did not find that dim for the var\n",
 					(*dimlist)[n_dims-2].string.c_str(), const_cast<char *>(var->name.c_str()) );
-				exit(-1);
+				in_error( "Internal error determining this variable's axes; it may not display correctly." );
+				view->scan_axis_id = view->y_axis_id = view->x_axis_id = -1;
+				return;
 				}
-			view->x_axis_id    = fi_dim_name_to_id(
-					var->files.front().get()->id,
+			view->x_axis_id    = file0->dimNameToId(
 					const_cast<char *>(var->name.c_str()),
 					(char *)(*dimlist)[n_dims-1].string.c_str() );
 			if( view->x_axis_id == -1 ) {
 				fprintf( stderr, "initial_determine_scan_axes: internal error: dim >%s< was indicated by routine fi_scannable_dims to be a scannable dim for var >%s<, but routine fi_dim_name_to_id did not find that dim for the var\n",
 					(*dimlist)[n_dims-1].string.c_str(), const_cast<char *>(var->name.c_str()) );
-				exit(-1);
+				in_error( "Internal error determining this variable's axes; it may not display correctly." );
+				view->scan_axis_id = view->y_axis_id = view->x_axis_id = -1;
+				return;
 				}
 			break;
 		}
@@ -1132,12 +993,22 @@ initial_determine_scan_axes( View *view, NCVar *var )
  * Actually go to the data file and read the data in, putting the result
  * in the view structure.
  */
-	static void
-fill_view_data( View *v )
+	void
+View::fillViewData()
 {
+	View *v = this;
 	int	i;
 
 	if( v->data_status == ViewDataStatus::Valid )
+		return;
+
+	/* Phase 13b: count[] is indexed by the axis ids just below, and
+	 * getData() writes x_size*y_size floats into v->data -- both are heap
+	 * corruption if the axes are unresolved or allocStorage() never ran
+	 * for this View (see View::has2dImage()). Silent, because this is an
+	 * internal helper several UI paths funnel into; the entry points that
+	 * can be driven by a button report the error themselves. */
+	if( ! v->has2dImage() )
 		return;
 
 	std::vector<size_t> count( v->variable->n_dims );
@@ -1166,7 +1037,7 @@ fill_view_data( View *v )
 		printf( "\\) %s\n", v->variable->files.front()->filename.c_str() );
 		}
 
-	fi_get_data( v->variable, v->var_place.data(), count.data(), v->data.data() );
+	g_app.session.dataset().getData( v->variable, v->var_place.data(), count.data(), v->data.data() );
 
 	v->data_status = ViewDataStatus::Valid;
 }
@@ -1175,13 +1046,15 @@ fill_view_data( View *v )
  * Alter the amount by which we are blowing up pixels
  */
 	void
-view_change_blowup( int delta, int redraw_flag, int view_var_is_valid )
+View::changeBlowup( int delta, int redraw_flag, int view_var_is_valid )
 {
+	View *view = this;
+	ViewerUi	&ui = *g_app.ui;
 	size_t	x_size, y_size, scaled_x_size, scaled_y_size;
 	char	blowup_label[32];
 	int	changed_size;
 
-	in_set_cursor_busy();
+	ui.in_set_cursor_busy();
 
 	/* Sequence of 'options.blowup' should be: ..., -4, -3, -2, 1, 2, 3, ... */
 	if( delta > 0 ) {
@@ -1206,11 +1079,20 @@ view_change_blowup( int delta, int redraw_flag, int view_var_is_valid )
 	else
 		snprintf( blowup_label, 31, "M 1/%1d", -options.blowup );
 
-        in_set_label( Label::Blowup, blowup_label );
+        ui.in_set_label( Label::Blowup, blowup_label );
 
 	if( view_var_is_valid ) {
 		view->variable->user_set_blowup = options.blowup;
 		}
+
+	/* Phase 13b: the blowup itself (label included) has already been
+	 * applied above and is a global option, so it is kept; only the part
+	 * that resizes this View's pixel buffer from size[x/y_axis_id] is
+	 * skipped, those reads being out of bounds with an unresolved axis.
+	 * Silent: this is reachable from a scroll-wheel zoom, which fires
+	 * continuously. */
+	if( ! view->has2dAxes() )
+		return;
 
 	x_size       = view->variable->size[view->x_axis_id];
 	y_size       = view->variable->size[view->y_axis_id];
@@ -1221,26 +1103,19 @@ view_change_blowup( int delta, int redraw_flag, int view_var_is_valid )
 	if( options.save_frames == true ) {
 		if( options.debug )
 			fprintf( stderr, "calling init_saveframes from view_change_blowup\n" );
-		init_saveframes();
+		view->initSaveframes();
 		}
 
 	if( redraw_flag ) {
-		changed_size = in_set_2d_size( scaled_x_size, scaled_y_size );
+		changed_size = ui.in_set_2d_size( scaled_x_size, scaled_y_size );
 		/* Have to test and see if we shrunk; no expose event
 		 * is generated in such a case, which would automatically
 		 * trigger this call without us having to do it.
 		 */
-		if( changed_size < 0 ) 
-			view_draw( false, false );
+		if( changed_size < 0 )
+			g_app.controller.draw( false, false );
 		}
-	in_set_cursor_normal();
-}
-
-/**************************************************************************************/
-	void
-redraw_ccontour()
-{
-	view_draw( true, false );
+	ui.in_set_cursor_normal();
 }
 
 /************************************************************************
@@ -1256,9 +1131,10 @@ redraw_ccontour()
  * (the scan axis's title label if this dim IS the scan axis, or just this
  * dim's own row otherwise), and redraw.
  */
-	static void
-view_apply_cur_dim_place( int dimid, NCDim *dim, size_t place )
+	void
+View::applyCurDimPlace( int dimid, NCDim *dim, size_t place )
 {
+	View *view = this;
 	int	has_bounds;
 	nc_type	type;
 	double	new_dimval, bound_min, bound_max;
@@ -1270,17 +1146,17 @@ view_apply_cur_dim_place( int dimid, NCDim *dim, size_t place )
 		/* This dim's own row is stepping the scan axis itself (e.g.
 		 * "time" shown both as its own dimension row and as the frame
 		 * the animation buttons step through) -- go through
-		 * set_scan_view() so the "frame N/M <date>" title label
+		 * View::scanToPlace() so the "frame N/M <date>" title label
 		 * (Label::ScanPlace) stays in sync, not just this row's own
 		 * display. change_view() (the play/rewind/forward path)
 		 * already does this; the other paths here used to skip it,
 		 * so stepping the scan dimension any other way silently went
 		 * stale.
 		 */
-		set_scan_view( place );
+		view->scanToPlace( place );
 		}
 	else {
-		type  = fi_dim_value( view->variable, dimid, place, &new_dimval, temp_string,
+		type  = g_app.session.dataset().dimValue( view->variable, dimid, place, &new_dimval, temp_string,
 			&has_bounds, &bound_min, &bound_max, view->var_place.data() );
 		if( type == NC_DOUBLE ) {
 			if( dim->timelike && options.t_conv ) {
@@ -1289,130 +1165,16 @@ view_apply_cur_dim_place( int dimid, NCDim *dim, size_t place )
 			else
 				snprintf( temp_string, 1023, "%lg", new_dimval );
 			}
-		in_set_cur_dim_value( dim->name.c_str(), temp_string );
+		g_app.ui->in_set_cur_dim_value( dim->name.c_str(), temp_string );
 		}
 
 	if( options.debug )
 		fprintf( stderr, "calling init_saveframes from view_apply_cur_dim_place\n" );
 
 	view->data_status = ViewDataStatus::Invalid;
-	init_saveframes();
+	view->initSaveframes();
 
-	view_draw( true, false ); /* 'true' because we initialized saveframes above */
-}
-
-	void
-view_change_cur_dim( char *dim_name, Modifier modifier )
-{
-	int	dimid, fileid;
-	size_t	place, size;
-	long	delta, prov_place;
-	NCDim	*dim;
-
-	if( view == NULL ) {
-		in_error( "Please select a variable first" );
-		return;
-		}
-
-	if( view->data_status == ViewDataStatus::Edited )
-		view_data_edit_warn();
-
-	fileid = view->variable->files.front().get()->id;
-	dimid  = fi_dim_name_to_id( fileid,
-				const_cast<char *>(view->variable->name.c_str()), dim_name );
-	if( (dimid == view->x_axis_id) ||
-	    (dimid == view->y_axis_id) )
-		return;
-
-	dim = view->variable->dim[dimid].get();
-
-	/* Modifier 1 is the standard action */
-	if( modifier == Modifier::M1 ) {
-		view->var_place[dimid] = view->var_place[dimid]+1L;
-		if( view->var_place[dimid] > view->variable->size[dimid]-1L )
-			view->var_place[dimid] = 0L;
-		}
-	else if( modifier == Modifier::M2 ) {
-		/* Modifier 2 means "do it faster" */
-		size  = view->variable->size[dimid];
-		delta = (int)(0.1*(float)size);
-		view->var_place[dimid] = view->var_place[dimid]+(long)delta;
-		if( view->var_place[dimid] > view->variable->size[dimid]-1L )
-			view->var_place[dimid] = 0L;
-		}
-	else
-		{
-		/* Modifier 3 means to go backwards */
-		prov_place = view->var_place[dimid]-1L;
-		if( prov_place < 0L )
-			view->var_place[dimid] = view->variable->size[dimid] -1L;
-		else
-			view->var_place[dimid] = prov_place;
-		}
-
-	place = view->var_place[dimid];
-	view_apply_cur_dim_place( dimid, dim, place );
-}
-
-/**********************************************************************
- * Jump a non-scan dimension directly to an absolute index -- the
- * counterpart to view_change_cur_dim()'s relative +1/-1/+10% stepping,
- * for a UI control (a slider) that lets the user pick a place directly
- * instead of clicking through it one step at a time.
- */
-	void
-view_set_cur_dim_index( const char *dim_name, long place )
-{
-	int	dimid, fileid;
-	NCDim	*dim;
-
-	if( view == NULL ) {
-		in_error( "Please select a variable first" );
-		return;
-		}
-
-	if( view->data_status == ViewDataStatus::Edited )
-		view_data_edit_warn();
-
-	fileid = view->variable->files.front().get()->id;
-	dimid  = fi_dim_name_to_id( fileid,
-				const_cast<char *>(view->variable->name.c_str()),
-				const_cast<char *>(dim_name) );
-	if( (dimid == view->x_axis_id) ||
-	    (dimid == view->y_axis_id) )
-		return;
-
-	if( place < 0 )
-		place = 0;
-	if( (size_t)place > view->variable->size[dimid]-1L )
-		place = (long)(view->variable->size[dimid]-1L);
-
-	dim = view->variable->dim[dimid].get();
-	view_apply_cur_dim_place( dimid, dim, (size_t)place );
-}
-
-/**********************************************************************
- * Current index of a non-scan dimension -- lets a UI control (a slider)
- * keep its on-screen position in sync with the actual view state after
- * a change made some other way (the row's own prev/next buttons, or
- * initial variable selection). Returns 0 if there's no current view or
- * the name doesn't resolve, both of which are benign no-ops for a caller
- * just trying to (re)draw a slider.
- */
-	size_t
-view_get_cur_dim_index( const char *dim_name )
-{
-	if( view == NULL )
-		return 0;
-
-	int fileid = view->variable->files.front().get()->id;
-	int dimid  = fi_dim_name_to_id( fileid,
-				const_cast<char *>(view->variable->name.c_str()),
-				const_cast<char *>(dim_name) );
-	if( dimid < 0 )
-		return 0;
-
-	return view->var_place[dimid];
+	g_app.controller.draw( true, false ); /* 'true' because we initialized saveframes above */
 }
 
 /**********************************************************************
@@ -1422,8 +1184,10 @@ view_get_cur_dim_index( const char *dim_name )
  * the user to make a new selection.
  */
 	void
-view_set_scan_dims( void )
+View::setScanDims()
 {
+	View *view = this;
+	ViewerUi	&ui = *g_app.ui;
 	Stringlist *dim_list, *new_dim_list = NULL, *inv_dim_list;
 	int	   changed_something = false;
 	NCVar	   *v;
@@ -1433,21 +1197,44 @@ view_set_scan_dims( void )
 	int        scan_dims_result;
 	Message    message;
 
+	/* Phase 13b: the two dim[] reads just below are out of bounds if
+	 * either display axis is unresolved -- reached by pressing "Axes"
+	 * while a 1-D variable is selected, which this port left possible
+	 * because the 2-D pane and its toolbar stayed live. Reported rather
+	 * than silent: the user pressed a button and gets nothing back
+	 * otherwise. */
+	if( ! view->has2dAxes() ) {
+		in_error( "This variable has no 2-D display axes to set." );
+		return;
+		}
+
 	v          = view->variable;
 	cur_x_name = const_cast<char *>(v->dim[view->x_axis_id]->name.c_str());
 	cur_y_name = const_cast<char *>(v->dim[view->y_axis_id]->name.c_str());
+	NetCDFFile *file0 = v->files.front()->file;
 
-	dim_list = fi_scannable_dims( v->files.front().get()->id, const_cast<char *>(v->name.c_str()) );
+	dim_list = file0->scannableDims( const_cast<char *>(v->name.c_str()) );
 	snprintf( scan_dim, sizeof(scan_dim), "%s", (*dim_list)[0].string.c_str() );
 
 	/* Pop up the dialog box which asks for the user's selection */
-	scan_dims_result = in_set_scan_dims( dim_list, cur_x_name,
+	scan_dims_result = ui.in_set_scan_dims( dim_list, cur_x_name,
 				cur_y_name, &new_dim_list );
-	/* Pre-existing upstream quirk, preserved: in_set_scan_dims() returns a
-	 * plain 0/1 (cancelled/ok), never Message::Cancel's numeric value, so
-	 * this check never actually fires -- see modernization.md's Phase 1
-	 * follow-up notes. */
-	if( scan_dims_result == static_cast<int>(Message::Cancel) )
+	/* Phase 13a: this used to compare against Message::Cancel, which is 2,
+	 * while in_set_scan_dims() returns a plain 0/1 -- so the check never
+	 * fired and the (*new_dim_list)[0] below dereferenced the still-NULL
+	 * new_dim_list on every cancel. That was a real SIGSEGV: press "Axes",
+	 * press "Cancel", core dump. MainWindow::scanDimsDialog()
+	 * (ui/src/main_window_dialogs.cc) returns 0 without ever writing
+	 * *new_dim_list on both of its early-out paths (the user cancelled,
+	 * and an empty dim_list), so test both the status and the list --
+	 * neither alone covers the other.
+	 *
+	 * The dead comparison was noticed during Phase 1 and written off as a
+	 * harmless upstream quirk, on the assumption that a real UI always
+	 * populates the list on any path reaching here. This port's own FLTK
+	 * dialog doesn't, which is what made it a live crash rather than a
+	 * curiosity. */
+	if( (scan_dims_result != 1) || (new_dim_list == NULL) )
 		return;
 
 	/* A special check: we don't allow transposition of the data
@@ -1458,10 +1245,10 @@ view_set_scan_dims( void )
 	 * new_dim_list is Y-axis first, then X-axis (see in_set_scan_dims's
 	 * own contract).
 	 */
-	new_y_id = fi_dim_name_to_id( v->files.front().get()->id, const_cast<char *>(v->name.c_str()), (char *)(*new_dim_list)[0].string.c_str() );
-	new_x_id = fi_dim_name_to_id( v->files.front().get()->id, const_cast<char *>(v->name.c_str()), (char *)(*new_dim_list)[1].string.c_str() );
+	new_y_id = file0->dimNameToId( const_cast<char *>(v->name.c_str()), (char *)(*new_dim_list)[0].string.c_str() );
+	new_x_id = file0->dimNameToId( const_cast<char *>(v->name.c_str()), (char *)(*new_dim_list)[1].string.c_str() );
 	if( new_x_id < new_y_id ) {
-		message = in_dialog( "Transposing the data is not allowed.\nI'm switching the axes....", true );
+		message = ui.in_dialog( "Transposing the data is not allowed.\nI'm switching the axes....", true );
 		if( message == Message::Cancel )
 			return;
 		inv_dim_list = NULL;
@@ -1474,15 +1261,15 @@ view_set_scan_dims( void )
 		return;
 		}
 
-	in_set_cursor_busy();
+	ui.in_set_cursor_busy();
 
 	if( strcmp( cur_y_name, (*new_dim_list)[0].string.c_str() ) != 0 ) {
-		view_set_axis( view, Dimension::Y, (char *)(*new_dim_list)[0].string.c_str() );
+		view->setAxis( Dimension::Y, (char *)(*new_dim_list)[0].string.c_str() );
 		changed_something = true;
 		}
 
 	if( strcmp( cur_x_name, (*new_dim_list)[1].string.c_str() ) != 0 ) {
-		view_set_axis( view, Dimension::X, (char *)(*new_dim_list)[1].string.c_str() );
+		view->setAxis( Dimension::X, (char *)(*new_dim_list)[1].string.c_str() );
 		changed_something = true;
 		}
 
@@ -1492,61 +1279,78 @@ view_set_scan_dims( void )
 		 * dimension ever comes up in the pop-up box to be able
 		 * to set it that way.  Use the previously saved value.
 		 */
-		view_set_axis( view, Dimension::Scan, scan_dim );
-		flip_if_inverted( view );
-		redraw_dimension_info();
+		view->setAxis( Dimension::Scan, scan_dim );
+		view->flipIfInverted();
+		view->redrawDimensionInfo();
 		view->data_status = ViewDataStatus::Invalid;
-		alloc_view_storage( view );
-		init_saveframes();
-		set_scan_buttons( view );
-		view_draw( true, false ); /* 'true' because we initialized saveframes above */
+		view->allocStorage();
+		view->initSaveframes();
+		view->setScanButtons();
+		g_app.controller.draw( true, false ); /* 'true' because we initialized saveframes above */
 		}
 
-	in_set_cursor_normal();
+	ui.in_set_cursor_normal();
 }
 
 /**************************************************************************************/
-	static void
-view_set_axis( View *local_view, Dimension dimension, char *new_dim_name )
+	void
+View::setAxis( Dimension dimension, char *new_dim_name )
 {
+	View *local_view = this;
 	int	new_id, old_id;
 	NCVar	*v;
 
 	v      = local_view->variable;
 	new_id = -1;
 	old_id = -1;
+	NetCDFFile *file0 = v->files.front()->file;
 
 	switch( dimension ) {
 		case Dimension::X:
-			new_id = fi_dim_name_to_id( v->files.front().get()->id, 
+			new_id = file0->dimNameToId(
 						const_cast<char *>(v->name.c_str()), new_dim_name );
-			if( options.debug ) 
-				fprintf( stderr, "setting dim X to %s\n", 
+			if( options.debug )
+				fprintf( stderr, "setting dim X to %s\n",
 						new_dim_name );
 			old_id = local_view->x_axis_id;
 			local_view->x_axis_id = new_id;
-			local_view->var_place[new_id] = 0L;
+			/* Phase 12e: new_id can legitimately be -1 (dimNameToId()'s
+			 * own doc comment: "-1 if the dimension is not found in the
+			 * requested variable"). var_place is std::vector<size_t>, so
+			 * var_place[-1] is var_place[SIZE_MAX] -- an out-of-bounds
+			 * heap write, confirmed under ASan before this guard existed.
+			 * The axis id above is still recorded as -1 (the established
+			 * "no such axis" sentinel used throughout this file), just
+			 * without touching var_place for an id that doesn't exist. */
+			if( new_id != -1 )
+				local_view->var_place[new_id] = 0L;
+			else
+				in_error( "The requested X axis dimension was not found for this variable." );
 			break;
 
 		case Dimension::Y:
-			new_id = fi_dim_name_to_id( v->files.front().get()->id, 
+			new_id = file0->dimNameToId(
 						const_cast<char *>(v->name.c_str()), new_dim_name );
-			if( options.debug ) 
-				fprintf( stderr, "setting dim Y to %s\n", 
+			if( options.debug )
+				fprintf( stderr, "setting dim Y to %s\n",
 						new_dim_name );
 			old_id = local_view->y_axis_id;
 			local_view->y_axis_id = new_id;
-			local_view->var_place[new_id] = 0L;
+			/* Phase 12e: same guard as Dimension::X above. */
+			if( new_id != -1 )
+				local_view->var_place[new_id] = 0L;
+			else
+				in_error( "The requested Y axis dimension was not found for this variable." );
 			break;
 
 		case Dimension::Scan:
 			if( strlen( new_dim_name ) == 0 ) {
-				set_buttons( BUTTONS_TIMEAXIS_OFF );
+				set_buttons( BUTTONS_TIMEAXIS_OFF, *g_app.ui );
 				local_view->scan_axis_id = -1;
 				return;
 				}
-			set_buttons( BUTTONS_ALL_ON );
-			new_id = fi_dim_name_to_id( v->files.front().get()->id, 
+			set_buttons( BUTTONS_ALL_ON, *g_app.ui );
+			new_id = file0->dimNameToId(
 						const_cast<char *>(v->name.c_str()), new_dim_name );
 			old_id = local_view->scan_axis_id;
 			local_view->scan_axis_id = new_id;
@@ -1556,7 +1360,7 @@ view_set_axis( View *local_view, Dimension dimension, char *new_dim_name )
 			break;
 
 		case Dimension::None:
-			new_id = fi_dim_name_to_id( v->files.front().get()->id, 
+			new_id = file0->dimNameToId(
 						const_cast<char *>(v->name.c_str()), new_dim_name );
 			if( options.debug ) 
 				fprintf( stderr, "setting dim NONE to %s\n", 
@@ -1567,13 +1371,14 @@ view_set_axis( View *local_view, Dimension dimension, char *new_dim_name )
 	if( old_id == new_id )
 		return;
 
-	in_indicate_active_dim( dimension, new_dim_name );
+	g_app.ui->in_indicate_active_dim( dimension, new_dim_name );
 }
 
 /**************************************************************************************/
-	static void
-alloc_view_storage( View *view )
+	void
+View::allocStorage()
 {
+	View *view = this;
 	size_t	x_size, y_size, scaled_x_size, scaled_y_size;
 
 	/* Allocate storage space for the data in the view structure. Note:
@@ -1586,8 +1391,16 @@ alloc_view_storage( View *view )
 	 * modernization.md's Phase 6 notes for the record of this decision.
 	 */
 
+	/* Phase 13b: has2dAxes(), not has2dImage() -- this function is what
+	 * makes has2dImage() true, so it can only require the axes. With an
+	 * unresolved axis the size[] reads below are out of bounds and the
+	 * resize() that follows would size the buffers from whatever heap
+	 * bytes happened to precede the vector. */
+	if( ! view->has2dAxes() )
+		return;
+
 	if( view->data_status == ViewDataStatus::Edited )
-		view_data_edit_warn();
+		view_data_edit_warn( g_app.session, *g_app.ui );
 	view->data_status = ViewDataStatus::Invalid;
 
 	x_size       = view->variable->size[view->x_axis_id];
@@ -1604,47 +1417,48 @@ alloc_view_storage( View *view )
  * values from the user, and set them.
  */
 	void
-view_set_range( void )
+View::setRange()
 {
+	View *view = this;
 	float	new_min, new_max;
 	int	allvars;
 	Message	message;
 
-	message = x_range( view->variable->user_min, view->variable->user_max,
-		view->variable->global_min, view->variable->global_max, 
+	message = g_app.ui->x_range( view->variable->user_min, view->variable->user_max,
+		view->variable->global_min, view->variable->global_max,
 		&new_min, &new_max, &allvars );
 	if( message == Message::Cancel )
 		return;
 
 	view->variable->user_min = new_min;
 	view->variable->user_max = new_max;
-	set_range_labels( new_min, new_max );
+	view->setRangeLabels( new_min, new_max );
 	view->data_status = ViewDataStatus::Invalid;
-	invalidate_all_saveframes();
-	view_draw( true, false ); /* 'true' because we just invalidated all saveframes */
+	g_app.session.invalidateAllSaveframes();
+	g_app.controller.draw( true, false ); /* 'true' because we just invalidated all saveframes */
 
 	if( allvars == true ) {
-		for( auto &cursor : variables ) {
+		for( auto &cursor : g_app.session.dataset().variablesMutable() ) {
 			cursor->user_min = new_min;
 			cursor->user_max = new_max;
 			cursor->have_set_range = true;
 			}
 		}
 
-	view_recompute_colorbar();
+	g_app.controller.recomputeColorbar();
 }
 
 /**************************************************************************************/
-	static void
-set_range_labels( float min, float max )
+	void
+View::setRangeLabels( float min, float max )
 {
+	View *view = this;
 	std::string units, var_long_name;
 	char	temp_label[4096], extra_label[4096];
+	NetCDFFile *file0 = view->variable->files.front()->file;
 
-	units = fi_var_units( view->variable->files.front().get()->id,
-				view->variable->name );
-	var_long_name = fi_long_var_name( view->variable->files.front().get()->id,
-					view->variable->name );
+	units = file0->varUnits( view->variable->name );
+	var_long_name = file0->longVarName( view->variable->name );
 	if( units.empty() ) {
 		snprintf( temp_label, 4095, "displayed range: %g to %g (%g to %g shown)",
 			view->variable->global_min,
@@ -1684,10 +1498,10 @@ set_range_labels( float min, float max )
 					limit_string(units).c_str() );
 		}
 
-	in_set_label( Label::DataExtrema, temp_label );
+	g_app.ui->in_set_label( Label::DataExtrema, temp_label );
 
 	if( options.want_extra_info ) {
-		in_set_label( Label::CcInfo1, extra_label );
+		g_app.ui->in_set_label( Label::CcInfo1, extra_label );
 		}
 
 }
@@ -1697,33 +1511,28 @@ set_range_labels( float min, float max )
  * frame ONLY, rather than the global min and maxes.
  */
 	void
-view_set_range_frame( void )
+View::setRangeFrame()
 {
-	view_draw( true, true );
+	g_app.controller.draw( true, true );
 }
 
 /**************************************************************************************/
 	void
-beep()
+View::initSaveframes()
 {
-	fprintf( stderr, "" );
-	fflush(  stderr );
-}
-
-/**************************************************************************************/
-	void
-init_saveframes()
-{
-	size_t	storage_size, n_scan_entries, xsize, ysize, n_extra_frames;
+	View *view = this;
+	size_t	storage_size, n_scan_entries, xsize, ysize, n_extra_frames, nt, nx, ny;
 	char	err_message[132];
 
 	if( options.save_frames == false )
 		return;
 
-	framestore.frame.clear();
-	framestore.frame.shrink_to_fit();
-	framestore.frame_valid.clear();
-	framestore.frame_valid.shrink_to_fit();
+	/* Phase 13b: xsize/ysize below index size[] by the display axis ids;
+	 * with either unresolved the frame-store capacity is computed from
+	 * out-of-bounds heap bytes. There is no 2-D field to cache frames of
+	 * in that state anyway. */
+	if( ! view->has2dAxes() )
+		return;
 
 	if( view->scan_axis_id == -1 ) {
 		n_scan_entries = 1;
@@ -1736,13 +1545,13 @@ init_saveframes()
 		if( n_extra_frames < 10 )
 			n_extra_frames = 10;
 		}
-	framestore.nt = n_scan_entries + n_extra_frames;
+	nt = n_scan_entries + n_extra_frames;
 
 	xsize = view->variable->size[view->x_axis_id];
 	ysize = view->variable->size[view->y_axis_id];
-	view_get_scaled_size( options.blowup, xsize, ysize, &(framestore.nx), &(framestore.ny) );
+	view_get_scaled_size( options.blowup, xsize, ysize, &nx, &ny );
 
-	storage_size =  framestore.nx * framestore.ny * framestore.nt;
+	storage_size = nx * ny * nt;
 
 	if( options.debug ) {
 		fprintf( stderr, "initializing saveframes:\n" );
@@ -1754,22 +1563,15 @@ init_saveframes()
 		fprintf( stderr, "	total storage size:%zu\n", storage_size );
 		}
 
-	/* Unlike alloc_view_storage()'s hard exit(-1) on allocation failure,
+	/* Unlike View::allocStorage()'s hard exit(-1) on allocation failure,
 	 * this path was always meant to degrade gracefully (in-core frame
 	 * caching is an optional speed optimization, not required for
 	 * correctness) -- preserved here by catching std::bad_alloc from
-	 * resize() rather than letting it propagate. */
+	 * FrameCache::reset() rather than letting it propagate. */
 	try {
-		framestore.frame.resize( storage_size );
-		framestore.frame_valid.resize( framestore.nt, false );
-		framestore.valid = true;
+		g_app.session.frameCache().reset( nt, nx, ny );
 		}
 	catch( const std::bad_alloc & ) {
-		framestore.frame.clear();
-		framestore.frame.shrink_to_fit();
-		framestore.frame_valid.clear();
-		framestore.frame_valid.shrink_to_fit();
-		framestore.valid = false;
 		snprintf( err_message, 131, "Can't allocate space for frame store.\nRequested size: %.1f MB",
 				(float)(storage_size*sizeof( ncv_pixel ))/1000000. );
 		options.save_frames = false;
@@ -1778,95 +1580,111 @@ init_saveframes()
 }
 
 /**************************************************************************************/
-	void
-invalidate_all_saveframes()
+/* Initialize a new view structure and set defaults. Returns a raw,
+ * heap-allocated View*; every caller immediately hands it to the global
+ * `view` unique_ptr (or, in set_scan_variable()'s variable-switch branch,
+ * carries it briefly as a local raw pointer before doing the same), which
+ * is what actually owns and eventually deletes it -- see set_scan_variable()
+ * and invalidate_variable() above. */
+	View *
+View::create( NCVar *var )
 {
-	size_t	i;
+	View *view = new View();
+	view->data_status  = ViewDataStatus::Invalid;
+	view->x_axis_id    = -1;
+	view->y_axis_id    = -1;
+	view->scan_axis_id = -1;
+	view->skip         =  1;
 
-	if( view == NULL )
-		return;
+	view->variable  = var;
+	view->var_place.assign( var->n_dims, 0 );
 
-	if( (view->scan_axis_id == -1) || ( framestore.valid == false ))
-		return;
+	view->plot_XY_axis   = -1;
+	view->plot_XY_nlines = 0;
 
-	for( i=0L; i<framestore.nt; i++ )
-		framestore.frame_valid[i] = false;
-}
-
-/**************************************************************************************/
-/* Initialize a new view structure and set defaults. Note: the View object
- * itself is intentionally leaked here via 'new', exactly as upstream leaked
- * it via 'malloc' -- only its data/pixels/var_place members ever get
- * released, in set_scan_variable() above, on variable change. */
-	static void
-init_view( View **view, NCVar *var )
-{
-	(*view) = new View();
-	(*view)->data_status  = ViewDataStatus::Invalid;
-	(*view)->x_axis_id    = -1;
-	(*view)->y_axis_id    = -1;
-	(*view)->scan_axis_id = -1;
-	(*view)->skip         =  1;
-
-	(*view)->variable  = var;
-	(*view)->var_place.assign( var->n_dims, 0 );
-
-	(*view)->plot_XY_axis   = -1;
-	(*view)->plot_XY_nlines = 0;
+	return( view );
 }
 
 /**************************************************************************************/
 	static void
-set_buttons( int to_state )
+set_buttons( int to_state, ViewerUi &ui )
 {
 	switch (to_state ) {
 
 	    case BUTTONS_ALL_ON:
-		in_set_sensitive( Button::Restart, 	  true );
-		in_set_sensitive( Button::Rewind, 	  true );
-		in_set_sensitive( Button::Backwards, 	  true );
-		in_set_sensitive( Button::Pause, 	  true );
-		in_set_sensitive( Button::Forward, 	  true );
-		in_set_sensitive( Button::Fastforward, 	  true );
-		in_set_sensitive( Button::ColormapSelect, true );
-		in_set_sensitive( Button::InvertPhysical, true );
-		in_set_sensitive( Button::InvertColormap, true );
-		in_set_sensitive( Button::Blowup, 	  true );
-		in_set_sensitive( Button::Transform, 	  true );
-		in_set_sensitive( Button::Print, 	  true );
-		in_set_sensitive( Button::Dimset, 	  true );
-		in_set_sensitive( Button::Range, 	  true );
-		in_set_sensitive( Button::BlowupType,	  true );
-		in_set_sensitive( Button::Edit,	  	  true );
-		in_set_sensitive( Button::Info,	  	  true );
+		ui.in_set_sensitive( Button::Restart, 	  true );
+		ui.in_set_sensitive( Button::Rewind, 	  true );
+		ui.in_set_sensitive( Button::Backwards, 	  true );
+		ui.in_set_sensitive( Button::Pause, 	  true );
+		ui.in_set_sensitive( Button::Forward, 	  true );
+		ui.in_set_sensitive( Button::Fastforward, 	  true );
+		ui.in_set_sensitive( Button::ColormapSelect, true );
+		ui.in_set_sensitive( Button::InvertPhysical, true );
+		ui.in_set_sensitive( Button::InvertColormap, true );
+		ui.in_set_sensitive( Button::Blowup, 	  true );
+		ui.in_set_sensitive( Button::Transform, 	  true );
+		ui.in_set_sensitive( Button::Print, 	  true );
+		ui.in_set_sensitive( Button::Dimset, 	  true );
+		ui.in_set_sensitive( Button::Range, 	  true );
+		ui.in_set_sensitive( Button::BlowupType,	  true );
+		ui.in_set_sensitive( Button::Edit,	  	  true );
+		ui.in_set_sensitive( Button::Info,	  	  true );
 		break;
 
 	    case BUTTONS_TIMEAXIS_OFF:
-		in_set_sensitive( Button::Restart, 	  false );
-		in_set_sensitive( Button::Rewind, 	  false );
-		in_set_sensitive( Button::Backwards, 	  false );
-		in_set_sensitive( Button::Forward, 	  false );
-		in_set_sensitive( Button::Fastforward, 	  false );
+		ui.in_set_sensitive( Button::Restart, 	  false );
+		ui.in_set_sensitive( Button::Rewind, 	  false );
+		ui.in_set_sensitive( Button::Backwards, 	  false );
+		ui.in_set_sensitive( Button::Forward, 	  false );
+		ui.in_set_sensitive( Button::Fastforward, 	  false );
 		break;
 		
+	    case BUTTONS_2D_OFF:
+		/* The tape-recorder row: a View with no 2-D picture also has no
+		 * scan axis to step along (initialDetermineScanAxes()'s case 1
+		 * sets both to -1 together), so these would be off anyway. */
+		ui.in_set_sensitive( Button::Restart, 	  false );
+		ui.in_set_sensitive( Button::Rewind, 	  false );
+		ui.in_set_sensitive( Button::Backwards, 	  false );
+		ui.in_set_sensitive( Button::Pause, 	  false );
+		ui.in_set_sensitive( Button::Forward, 	  false );
+		ui.in_set_sensitive( Button::Fastforward, 	  false );
+		/* Act on the 2-D picture: each of these was a live crash before
+		 * Phase 13b's guards, and is meaningless here even with them. */
+		ui.in_set_sensitive( Button::InvertPhysical, false );
+		ui.in_set_sensitive( Button::Blowup, 	  false );
+		ui.in_set_sensitive( Button::BlowupType,	  false );
+		ui.in_set_sensitive( Button::Transform, 	  false );
+		ui.in_set_sensitive( Button::Print, 	  false );
+		ui.in_set_sensitive( Button::Dimset, 	  false );
+		ui.in_set_sensitive( Button::Edit,	  	  false );
+		/* Deliberately left ON: ColormapSelect, InvertColormap, Range and
+		 * Info all work on the variable rather than on the picture, and
+		 * the Phase 13b sweep confirmed each is safe in this state. */
+		ui.in_set_sensitive( Button::ColormapSelect, true );
+		ui.in_set_sensitive( Button::InvertColormap, true );
+		ui.in_set_sensitive( Button::Range, 	  true );
+		ui.in_set_sensitive( Button::Info,	  	  true );
+		break;
+
 	    case BUTTONS_ALL_OFF:
-		in_set_sensitive( Button::Restart, 	  false );
-		in_set_sensitive( Button::Rewind, 	  false );
-		in_set_sensitive( Button::Backwards, 	  false );
-		in_set_sensitive( Button::Pause, 	  false );
-		in_set_sensitive( Button::Forward, 	  false );
-		in_set_sensitive( Button::Fastforward, 	  false );
-		in_set_sensitive( Button::ColormapSelect, false );
-		in_set_sensitive( Button::InvertPhysical, false );
-		in_set_sensitive( Button::InvertColormap, false );
-		in_set_sensitive( Button::Transform, 	  false );
-		in_set_sensitive( Button::Blowup, 	  false );
-		in_set_sensitive( Button::Print, 	  false );
-		in_set_sensitive( Button::Dimset, 	  false );
-		in_set_sensitive( Button::Range, 	  false );
-		in_set_sensitive( Button::BlowupType,	  false );
-		in_set_sensitive( Button::Edit,	  	  false );
-		in_set_sensitive( Button::Info,	  	  false );
+		ui.in_set_sensitive( Button::Restart, 	  false );
+		ui.in_set_sensitive( Button::Rewind, 	  false );
+		ui.in_set_sensitive( Button::Backwards, 	  false );
+		ui.in_set_sensitive( Button::Pause, 	  false );
+		ui.in_set_sensitive( Button::Forward, 	  false );
+		ui.in_set_sensitive( Button::Fastforward, 	  false );
+		ui.in_set_sensitive( Button::ColormapSelect, false );
+		ui.in_set_sensitive( Button::InvertPhysical, false );
+		ui.in_set_sensitive( Button::InvertColormap, false );
+		ui.in_set_sensitive( Button::Transform, 	  false );
+		ui.in_set_sensitive( Button::Blowup, 	  false );
+		ui.in_set_sensitive( Button::Print, 	  false );
+		ui.in_set_sensitive( Button::Dimset, 	  false );
+		ui.in_set_sensitive( Button::Range, 	  false );
+		ui.in_set_sensitive( Button::BlowupType,	  false );
+		ui.in_set_sensitive( Button::Edit,	  	  false );
+		ui.in_set_sensitive( Button::Info,	  	  false );
 		break;
 
 	default:
@@ -1877,16 +1695,17 @@ set_buttons( int to_state )
 }
 
 /**************************************************************************************/
-	static void
-re_determine_scan_axes( View *new_view, NCVar *new_var, View *old_view )
+	void
+View::reDetermineScanAxes( NCVar *new_var, View *old_view )
 {
+	View *new_view = this;
 	NCVar	*old_var;
 	int	old_n_scannable_dims, i, dim_index;
 	NCDim	*old_dim;
 
 	old_var = old_view->variable;
 	old_n_scannable_dims = stringlist_len(
-		fi_scannable_dims( old_var->files.front().get()->id, const_cast<char *>(old_var->name.c_str())) );
+		old_var->files.front()->file->scannableDims( const_cast<char *>(old_var->name.c_str())) );
 
 	for( i=0; i<old_n_scannable_dims; i++ ) {
 		old_dim = old_var->dim[i].get();
@@ -1897,7 +1716,7 @@ re_determine_scan_axes( View *new_view, NCVar *new_var, View *old_view )
 			/* dim_index is the index in the *new* variable of
 		 	 * the *old* dimension
 		 	 */
-			dim_index = fi_dim_name_to_id( new_var->files.front().get()->id,
+			dim_index = new_var->files.front()->file->dimNameToId(
 					const_cast<char *>(new_var->name.c_str()), const_cast<char *>(old_dim->name.c_str()) );
 			if( dim_index != -1 ) {
 				/* This dimension is in the new variable. 
@@ -1925,29 +1744,40 @@ re_determine_scan_axes( View *new_view, NCVar *new_var, View *old_view )
  * the current one; in that case, try to set the new view to the same
  * place as the old view, if possible.
  */
-	static void
-set_scan_place( View *new_view, NCVar *var, View *old_view )
+	void
+View::setScanPlace( NCVar *var, View *old_view )
 {
+	View *new_view = this;
+
 	/* Initially, always set to zero */
-	initial_set_scan_place( new_view, var );
+	initialSetScanPlace( var );
 
 	/* If there is some additional information based on the
 	 * old view, use that.
 	 */
 	if( old_view != NULL )
-		re_set_scan_place( new_view, var, old_view );
+		reSetScanPlace( var, old_view );
 
 	/* All place information for the displayed axes MUST be
 	 * set to zero!!
-	 */
-	new_view->var_place[new_view->x_axis_id] = 0L;
-	new_view->var_place[new_view->y_axis_id] = 0L;
+	 *
+	 * Phase 13d: guarded the same way View::setAxis() was in Phase 12e --
+	 * same file, same vector, same -1 sentinel. var_place is
+	 * std::vector<size_t>, so var_place[-1] is var_place[SIZE_MAX], an
+	 * out-of-bounds heap WRITE; confirmed under ASan. initialSetScanPlace()
+	 * above has already zeroed every real dimension, so skipping an
+	 * unresolved axis loses nothing. */
+	if( new_view->x_axis_id != -1 )
+		new_view->var_place[new_view->x_axis_id] = 0L;
+	if( new_view->y_axis_id != -1 )
+		new_view->var_place[new_view->y_axis_id] = 0L;
 }
 
 /**************************************************************************************/
-	static void
-initial_set_scan_place( View *view, NCVar *var )
+	void
+View::initialSetScanPlace( NCVar *var )
 {
+	View *view = this;
 	int	i;
 
 	for( i=0; i<var->n_dims; i++ )
@@ -1956,9 +1786,10 @@ initial_set_scan_place( View *view, NCVar *var )
 }
 
 /**************************************************************************************/
-	static void
-re_set_scan_place( View *new_view, NCVar *new_var, View *old_view )
+	void
+View::reSetScanPlace( NCVar *new_var, View *old_view )
 {
+	View *new_view = this;
 	int	i, dim_index;
 	NCDim	*new_dim;
 	NCVar	*old_var;
@@ -1973,7 +1804,7 @@ re_set_scan_place( View *new_view, NCVar *new_var, View *old_view )
 		 */
 		new_dim   = new_var->dim[i].get();
 		if( new_dim != NULL ) {
-			dim_index = fi_dim_name_to_id( old_var->files.front().get()->id,
+			dim_index = old_var->files.front()->file->dimNameToId(
 					const_cast<char *>(old_var->name.c_str()), const_cast<char *>(new_dim->name.c_str()) );
 			if( dim_index != -1 ) {
 				old_place = old_view->var_place[dim_index];
@@ -1988,9 +1819,10 @@ re_set_scan_place( View *new_view, NCVar *new_var, View *old_view )
 /* If 'val_to_set_to' is -99999, then the blowup is calculated automatically,
  * otherwise the blowup is set to val_to_set_to
  */
-	static void
-calculate_blowup( View *view, NCVar *var, int val_to_set_to )
+	void
+View::calculateBlowup( NCVar *var, int val_to_set_to )
 {
+	View *view = this;
 	size_t	x_size, y_size;
 	float	fbx, fby, f_x_size, f_y_size, f_blowup;
 	int	ifbx, view_var_is_valid;
@@ -2002,10 +1834,10 @@ calculate_blowup( View *view, NCVar *var, int val_to_set_to )
 
 	if( val_to_set_to != -99999 ) {
 		while( options.blowup > val_to_set_to ) {
-			view_change_blowup( -1, false, view_var_is_valid );			
+			view->changeBlowup( -1, false, view_var_is_valid );			
 			}
 		while( options.blowup < val_to_set_to ) {
-			view_change_blowup( 1, false, view_var_is_valid );			
+			view->changeBlowup( 1, false, view_var_is_valid );			
 			}
 		return;
 		}
@@ -2015,7 +1847,7 @@ calculate_blowup( View *view, NCVar *var, int val_to_set_to )
 	y_size = var->size[view->y_axis_id];
 	while( (options.blowup*x_size < static_cast<size_t>(options.blowup_default_size)) &&
 	       (options.blowup*y_size < static_cast<size_t>(options.blowup_default_size)) ) {
-		view_change_blowup( 1, false, view_var_is_valid );
+		view->changeBlowup( 1, false, view_var_is_valid );
 		}
 
 	/* If picture is too big, reduce it some */
@@ -2027,24 +1859,25 @@ calculate_blowup( View *view, NCVar *var, int val_to_set_to )
 	fbx = (fbx > fby) ? fbx : fby;
 	if( fbx > 3 ) {
 		ifbx = -(int)fbx;
-		view_change_blowup(ifbx,false, view_var_is_valid);
+		view->changeBlowup(ifbx,false, view_var_is_valid);
 		}
 }
 
 /**************************************************************************************/
 	static void
-draw_file_info( NCVar *var )
+draw_file_info( NCVar *var, ViewerSession &session, ViewerUi &ui )
 {
 	std::string title, units, var_long_name;
 	char	range_label[256], temp_label[600];
+	std::unique_ptr<ViewState> &view = session.activeView();
 
-	title = fi_title( var->files.front().get()->id );
+	title = var->files.front()->file->title();
 	if( title.empty() )
-		in_set_label( Label::Title, PROGRAM_ID );
+		ui.in_set_label( Label::Title, PROGRAM_GUI_LABEL );
 	else
-		in_set_label( Label::Title, title.c_str() );
+		ui.in_set_label( Label::Title, title.c_str() );
 
-	units = fi_var_units( var->files.front().get()->id, var->name );
+	units = var->files.front()->file->varUnits( var->name );
 	if( units.empty() ) {
 		if( (var->global_min != var->user_min) || (var->global_max != var->user_max))
 			snprintf( range_label, 255, "%g to %g (%g to %g shown)",
@@ -2073,63 +1906,73 @@ draw_file_info( NCVar *var )
 					limit_string(units).c_str() );
 		}
 	snprintf( temp_label, 599, "displayed range: %s", range_label );
-	in_set_label( Label::DataExtrema, temp_label );
+	ui.in_set_label( Label::DataExtrema, temp_label );
 
-	var_long_name = fi_long_var_name( view->variable->files.front().get()->id,
+	var_long_name = view->variable->files.front()->file->longVarName(
 					view->variable->name );
 	if( var_long_name.empty() ) {
 		snprintf( temp_label, 255, "variable=%s", limit_string(view->variable->name).c_str() );
-		in_set_label( Label::ScanvarName, temp_label );
+		ui.in_set_label( Label::ScanvarName, temp_label );
 		if( options.want_extra_info ) {
 			snprintf( temp_label, 599, "%s (%s)", limit_string(view->variable->name).c_str(),
 								range_label );
-			in_set_label( Label::CcInfo1, temp_label );
+			ui.in_set_label( Label::CcInfo1, temp_label );
 			}
 		}
 	else
 		{
 		snprintf( temp_label, 599, "displaying %s", limit_string(var_long_name).c_str() );
-		in_set_label( Label::ScanvarName, temp_label );
+		ui.in_set_label( Label::ScanvarName, temp_label );
 		if( options.want_extra_info ) {
 			snprintf( temp_label, 599, "%s (%s)",  limit_string(var_long_name).c_str(), range_label );
-			in_set_label( Label::CcInfo1, temp_label );
+			ui.in_set_label( Label::CcInfo1, temp_label );
 			}
 		}
 }
 
 /**************************************************************************************/
 	void
-redraw_dimension_info()
+View::redrawDimensionInfo()
 {
+	View *view = this;
+	ViewerUi	&ui = *g_app.ui;
 	int	i, please_flip;
 	NCDim	*d, *y_dim;
 	Stringlist *dimlist;
 	NCVar	*var;
 	char	*cur_y_name;
 
+	/* Phase 13b: var->dim[y_axis_id] below is a std::vector of
+	 * unique_ptr<NCDim>; with y_axis_id == -1 that reads a bogus pointer
+	 * out of bounds and dereferences it for ->name. There is no Y axis to
+	 * label in that state. */
+	if( ! view->has2dAxes() )
+		return;
+
 	var     = view->variable;
-	dimlist = fi_scannable_dims( var->files.front().get()->id, const_cast<char *>(var->name.c_str()) );
+	dimlist = var->files.front()->file->scannableDims( const_cast<char *>(var->name.c_str()) );
 
 	y_dim      = var->dim[view->y_axis_id].get();
 	cur_y_name = const_cast<char *>(y_dim->name.c_str());
 
-	x_init_dim_info( dimlist );
+	ui.x_init_dim_info( dimlist );
 
 	for( i=0; i<var->n_dims; i++ )
 		if( (d = var->dim[i].get()) != NULL ) {
 			please_flip = ((d->name == cur_y_name) &&
 						options.invert_physical);
-			in_fill_dim_info( d, please_flip ); 
+			ui.in_fill_dim_info( d, please_flip );
 			}
 
-	show_current_dim_values( view );
-	label_dimensions( view );
+	view->showCurrentDimValues();
+	view->labelDimensions();
 }
 
 /**************************************************************************************/
-	static void
-show_current_dim_values( View *view )
+	void
+View::showCurrentDimValues()
 {
+	View *view = this;
 	int	dimid, has_bounds;
 	NCVar	*var;
 	Stringlist *scannable_dims;
@@ -2139,58 +1982,70 @@ show_current_dim_values( View *view )
 	nc_type	type;
 
 	var = view->variable;
-	scannable_dims   = fi_scannable_dims( var->files.front().get()->id, const_cast<char *>(var->name.c_str()) );
+	scannable_dims   = var->files.front()->file->scannableDims( const_cast<char *>(var->name.c_str()) );
 
 	if( scannable_dims != NULL )
 	for( auto &e : *scannable_dims ) {
 		dim_name   = (char *)e.string.c_str();
-		dimid      = fi_dim_name_to_id(
-					var->files.front().get()->id,
+		dimid      = var->files.front()->file->dimNameToId(
 					const_cast<char *>(var->name.c_str()),
 					dim_name );
+		/* Phase 12e: dimid can legitimately be -1 if this dim, though
+		 * scannable in general, doesn't resolve for this particular
+		 * variable -- var_place[-1] would be var_place[SIZE_MAX], an
+		 * out-of-bounds read (std::vector<size_t>). This function runs
+		 * on every redraw of the dimension-info labels, so skip the one
+		 * dim silently rather than pop an in_error() dialog on every
+		 * frame -- matches ViewerSession::curDimIndex()'s existing
+		 * "benign no-op on an unresolved dim" precedent (viewer_session.cc). */
+		if( dimid < 0 )
+			continue;
 
 		place = view->var_place[dimid];
 
-		type  = fi_dim_value( view->variable, dimid, place, &new_dimval, temp_string,
+		type  = g_app.session.dataset().dimValue( view->variable, dimid, place, &new_dimval, temp_string,
 			&has_bounds, &bound_min, &bound_max, view->var_place.data() );
 		if( type == NC_DOUBLE )
 			snprintf( temp_string, 1023, "%lg", new_dimval );
-		in_set_cur_dim_value( dim_name, temp_string );
+		g_app.ui->in_set_cur_dim_value( dim_name, temp_string );
 		}
 }
 
 /**************************************************************************************/
-	static void
-label_dimensions( View *view )
+	void
+View::labelDimensions()
 {
+	View *view = this;
+	ViewerUi	&ui = *g_app.ui;
 	NCDim	*dim;
 	char	*dim_name;
 
 	if( view->x_axis_id != -1 ) {
 		dim      = view->variable->dim[view->x_axis_id].get();
 		dim_name = const_cast<char *>(dim->name.c_str());
-		in_indicate_active_dim( Dimension::X, dim_name );
-		in_set_cur_dim_value  ( dim_name, "-X-" );
+		ui.in_indicate_active_dim( Dimension::X, dim_name );
+		ui.in_set_cur_dim_value  ( dim_name, "-X-" );
 		}
-	
+
 	if( view->y_axis_id != -1 ) {
 		dim      = view->variable->dim[view->y_axis_id].get();
 		dim_name = const_cast<char *>(dim->name.c_str());
-		in_indicate_active_dim( Dimension::Y, dim_name );
-		in_set_cur_dim_value  ( dim_name, "-Y-" );
+		ui.in_indicate_active_dim( Dimension::Y, dim_name );
+		ui.in_set_cur_dim_value  ( dim_name, "-Y-" );
 		}
 
 	if( view->scan_axis_id != -1 ) {
 		dim      = view->variable->dim[view->scan_axis_id].get();
 		dim_name = const_cast<char *>(dim->name.c_str());
-		in_indicate_active_dim( Dimension::Scan, dim_name );
+		ui.in_indicate_active_dim( Dimension::Scan, dim_name );
 		}
 }
 
 /**************************************************************************************/
-	static void
-flip_if_inverted( View *view )
+	void
+View::flipIfInverted()
 {
+	View *view = this;
 	NCDim	*y_dim;
 
 	if( options.no_autoflip )
@@ -2205,113 +2060,25 @@ flip_if_inverted( View *view )
 	else
 		options.invert_physical = false;
 
-	x_force_set_invert_state( options.invert_physical );
+	g_app.ui->x_force_set_invert_state( options.invert_physical );
 }
 
-/**************************************************************************************/
-/* This reports the mouse location in the main (2-D color contour) window */
+/**************************************************************************************
+ * Phase 2 postscript: moved from the file-local static free function
+ * view_construct_scalar_coord_str() onto View. Its `view == NULL` check
+ * looked like the same session guard the 12 functions above carry, but
+ * both its call sites (View::setScanButtons(), View::scanToPlace() above)
+ * are View methods, so the global `view` they read is always exactly the
+ * `this` whose method is currently running -- never actually null here.
+ * The check is preserved verbatim anyway (`View *view = this;` makes it
+ * unreachable rather than removing it, matching this codebase's
+ * move-don't-split rule -- see also View::setScanDims()'s similarly-dead
+ * cancel check).
+ */
 	void
-view_report_position( int x, int y, unsigned int button_mask )
+View::constructScalarCoordStr( char *str, int slen )
 {
-	size_t	data_x, data_y, x_size, y_size;
-	int	type, has_bounds, i, x_is_mapped, y_is_mapped;
-	float	val;
-	double	new_dimval, bound_min, bound_max;
-	char	current_value_label[500], temp_string[1024];
-	std::string	xdim_str, ydim_str;
-	NCDim	*xdim, *ydim;
-	size_t	virt_cursor_pos[MAX_NC_DIMS];
-
-	/* This can happen if you display a 2-d variable, then
-	 * display a variable with no valid range (thereby setting
-	 * the view to NULL), then roll back over the 2-d color
-	 * window. Fix thanks to Matthew Bettencourt @ usm.edu */
-	if( ! view )
-		return;
-
-	/* This can happen if we click on a 2-d variable, then click
-	 * on a 1-d variable, then move the pointer back over the
-	 * displayed colormap of the (old) 2-d variable.
-	 */
-	if( view->variable->effective_dimensionality == 1 )
-		return;
-
-	if( view->data_status == ViewDataStatus::Invalid ) {
-		fill_view_data( view );
-		view->data_status = ViewDataStatus::Valid;
-		}
-
-	mouse_xy_to_data_xy( x, y, options.blowup, &data_x, &data_y );
-
-	x_size = view->variable->size[view->x_axis_id];
-	y_size = view->variable->size[view->y_axis_id];
-
-	/* Make sure we don't go outside the limits */
-	data_x = ( (data_x >= x_size ) ? x_size-1 : data_x );
-	data_y = ( (data_y >= y_size ) ? y_size-1 : data_y );
-
-	/* Invert Y because the reporting counts from the
-	 * UPPER LEFT, not the lower left like we want
-	 * it to.  If the *picture* is inverted, don't flip
-	 * y!
-	 */
-	if( !options.invert_physical )
-		data_y = y_size - data_y - 1;
-	
-	/* Get the value of the data field under the cursor */
-	val = view->data[data_x + data_y*x_size];
-
-	/* Get the values of the X and Y indices. 
-	* 'type' is the data type of the dimension--can be float or character 
-	*/
-	xdim = view->variable->dim[view->x_axis_id].get();
-	ydim = view->variable->dim[view->y_axis_id].get();
-
-	x_is_mapped = (view->variable->dim_map_info[ view->x_axis_id ] != NULL);
-	y_is_mapped = (view->variable->dim_map_info[ view->y_axis_id ] != NULL);
-	if( 1 || x_is_mapped || y_is_mapped ) {
-		/* Get virtual position in all dims for this mouse cursor point */
-		for( i=0; i<view->variable->n_dims; i++ )
-			virt_cursor_pos[i] = view->var_place[i];
-		virt_cursor_pos[ view->x_axis_id ] = data_x;
-		virt_cursor_pos[ view->y_axis_id ] = data_y;
-		}
-
-	type = fi_dim_value( view->variable, view->x_axis_id, data_x, &new_dimval,
-			temp_string, &has_bounds, &bound_min, &bound_max, virt_cursor_pos );
-	if( type == NC_DOUBLE ) {
-		char	dim_str_buf[80];
-		if( (xdim != NULL) && xdim->timelike && options.t_conv )
-			fmt_time( dim_str_buf, 79, new_dimval, xdim, 1 );
-		else
-			snprintf( dim_str_buf, 79, "%.7lg", new_dimval );
-		xdim_str = dim_str_buf;
-		}
-	else
-		xdim_str = std::string( temp_string, strnlen( temp_string, 79 ) );
-
-	type = fi_dim_value( view->variable, view->y_axis_id, data_y, &new_dimval,
-			temp_string, &has_bounds, &bound_min, &bound_max, virt_cursor_pos );
-	if( type == NC_DOUBLE ) {
-		char	dim_str_buf[80];
-		if( (ydim != NULL) && ydim->timelike && options.t_conv )
-			fmt_time( dim_str_buf, 79, new_dimval, ydim, 1 );
-		else
-			snprintf( dim_str_buf, 79, "%.7lg", new_dimval );
-		ydim_str = dim_str_buf;
-		}
-	else
-		ydim_str = std::string( temp_string, strnlen( temp_string, 79 ) );
-
-	snprintf( current_value_label, 499, "Current: (i=%1zu, j=%1zu) %g (x=%s, y=%s)\n",
-				data_x, data_y, val, xdim_str.c_str(), ydim_str.c_str() );
-	in_set_label( Label::DataValue, current_value_label );
-}
-
-/**************************************************************************************/
-	static void
-view_construct_scalar_coord_str( char *str, int slen ) 
-{
+	View *view = this;
 	size_t	ts;
 	FDBlist	*fdb;
 	int	isc, nsc, fdb_index, space_avail;
@@ -2371,7 +2138,7 @@ view_construct_scalar_coord_str( char *str, int slen )
 			/* A CF scalar coordinate whose own units parse as a UDUNITS
 			 * time (e.g. WRF's "XTIME", "minutes since ..."). Format it
 			 * as a calendar date the same way a real time dimension's
-			 * current value is (set_scan_view(), above) instead of
+			 * current value is (View::scanToPlace(), above) instead of
 			 * showing the raw "<value> <units>" string -- built via a
 			 * throwaway NCDim carrying just what fmt_time()/udu_fmt_time()
 			 * actually read (name/units/calendar/timelike/time_std); no
@@ -2431,19 +2198,27 @@ view_report_position_vals( float xval, float yval, int plot_index )
 
 /**************************************************************************************/
 	void
-set_dataedit_place()
+View::setDataeditPlace()
 {
+	View *view = this;
 	size_t	data_x, data_y, orig_data_y, x_size, y_size;
 	int	x, y;
 	size_t	index;
 
+	/* Phase 13b: reached from a middle-button press/drag on the 2-D pane
+	 * (ui/src/main_window.cc), which this port left clickable even while
+	 * a 1-D variable is selected. Indexes size[] by both display axes and
+	 * then reads view->data. Silent: mouse drags fire continuously. */
+	if( ! view->has2dImage() )
+		return;
+
 	if( view->data_status == ViewDataStatus::Invalid ) {
-		fill_view_data( view );
+		view->fillViewData();
 		view->data_status = ViewDataStatus::Valid;
 		}
 
-	in_query_pointer_position( &x, &y );
-	if( (x < 0) || (y < 0) ) 
+	g_app.ui->in_query_pointer_position( &x, &y );
+	if( (x < 0) || (y < 0) )
 		return;
 
 	mouse_xy_to_data_xy( x, y, options.blowup, &data_x, &data_y );
@@ -2466,120 +2241,42 @@ set_dataedit_place()
 		data_y = y_size - data_y - 1;
 	
 	index =  data_x + orig_data_y*x_size;
-	in_set_edit_place( index, data_x, orig_data_y, x_size, y_size );
+	g_app.ui->in_set_edit_place( index, data_x, orig_data_y, x_size, y_size );
 }
 
 /**************************************************************************************/
 	void
-set_min_from_curdata()
+View::dataEdit()
 {
-	size_t	data_x, data_y, x_size, y_size;
-	int	x, y;
-	float	val;
-
-	// See plot_XY()'s comment: ImageView accepts Ctrl-click before any
-	// variable is selected, unlike upstream's canvas widget.
-	if( view == NULL )
-		return;
-
-	if( view->data_status == ViewDataStatus::Invalid ) {
-		fill_view_data( view );
-		view->data_status = ViewDataStatus::Valid;
-		}
-
-	in_query_pointer_position( &x, &y );
-	mouse_xy_to_data_xy( x, y, options.blowup, &data_x, &data_y );
-
-	x_size = view->variable->size[view->x_axis_id];
-	y_size = view->variable->size[view->y_axis_id];
-
-	/* Make sure we don't go outside the limits */
-	data_x = ( (data_x >= x_size ) ? x_size-1 : data_x );
-	data_y = ( (data_y >= y_size ) ? y_size-1 : data_y );
-
-	/* Invert Y because the reporting counts from the
-	 * UPPER LEFT, not the lower left like we want
-	 * it to.  If the *picture* is inverted, don't flip
-	 * y!
-	 */
-	if( !options.invert_physical )
-		data_y = y_size - data_y - 1;
-	
-	/* Get the value of the data field under the cursor */
-	val = view->data[data_x + data_y*x_size];
-
-	view->variable->user_min = val;
-	set_range_labels( val, view->variable->user_max );
-	init_saveframes();
-	view_draw( true, false ); /* 'true' because we just invalidated saveframes */
-
-	view_recompute_colorbar();
-}
-
-/**************************************************************************************/
-	void
-set_max_from_curdata()
-{
-	size_t	data_x, data_y, x_size, y_size;
-	int	x, y;
-	float	val;
-
-	// See plot_XY()'s comment: ImageView accepts Ctrl-click before any
-	// variable is selected, unlike upstream's canvas widget.
-	if( view == NULL )
-		return;
-
-	if( view->data_status == ViewDataStatus::Invalid ) {
-		fill_view_data( view );
-		view->data_status = ViewDataStatus::Valid;
-		}
-
-	in_query_pointer_position( &x, &y );
-	mouse_xy_to_data_xy( x, y, options.blowup, &data_x, &data_y );
-
-	x_size = view->variable->size[view->x_axis_id];
-	y_size = view->variable->size[view->y_axis_id];
-
-	/* Make sure we don't go outside the limits */
-	data_x = ( (data_x >= x_size ) ? x_size-1 : data_x );
-	data_y = ( (data_y >= y_size ) ? y_size-1 : data_y );
-
-	/* Invert Y because the reporting counts from the
-	 * UPPER LEFT, not the lower left like we want
-	 * it to.  If the *picture* is inverted, don't flip
-	 * y!
-	 */
-	if( !options.invert_physical )
-		data_y = y_size - data_y - 1;
-	
-	/* Get the value of the data field under the cursor */
-	val = view->data[data_x + data_y*x_size];
-
-	view->variable->user_max = val;
-	set_range_labels( val, view->variable->user_max );
-	init_saveframes();
-	view_draw( true, false ); /* 'true' because we just invalidated saveframes */
-
-	view_recompute_colorbar();
-}
-
-/**************************************************************************************/
-	void
-view_data_edit( void )
-{
+	View *view = this;
 	size_t	i, j;
 	int	j2;
 	size_t	x_size, y_size;
-	char	**line_array;
 	size_t	index, n_entries;
 	float	val;
+	char	buf[32];
+
+	/* Phase 13b: the "Edit" button stays enabled while a 1-D variable is
+	 * selected, and the size[] reads below are then out of bounds --
+	 * n_entries comes out of whatever heap bytes precede the vector, and
+	 * the loop reads view->data (empty on that path) that many times.
+	 * There is no 2-D grid of cells to edit. */
+	if( ! view->has2dImage() ) {
+		in_error( "There is no 2-D data field to edit for this variable." );
+		return;
+		}
 
 	x_size = view->variable->size[view->x_axis_id];
 	y_size = view->variable->size[view->y_axis_id];
 
 	n_entries  = x_size * y_size;
-	/* +1 for the NULL terminator written after the loop below */
-	line_array = (char **)malloc( sizeof(char *)*(n_entries+1) );
+	/* Phase 12b: was a manual double-malloc'd char** (one alloc for the
+	 * pointer array, one per cell) that FltkViewerUi::x_dataedit never
+	 * freed -- a real leak on every data-edit dialog open in the actual
+	 * application. A std::vector<std::string> owns its own storage, so
+	 * there's no allocation to leak and no separate NULL-terminator slot
+	 * to size correctly (the vector's own size() is the count). */
+	std::vector<std::string> cells( n_entries );
 
 	index = 0L;
 	for( j=0; j<y_size; j++)
@@ -2589,20 +2286,27 @@ view_data_edit( void )
 		else
 			j2 = y_size - j - 1;
 		val = view->data[i + j2*x_size];
-		line_array[index] = (char *)malloc( 32 );
-		snprintf( line_array[index], 31, "%-10.5g", val );
+		snprintf( buf, sizeof(buf), "%-10.5g", val );
+		cells[index] = buf;
 		index++;
 		}
-	line_array[index] = NULL;
 
-	x_dataedit( line_array, x_size );
+	g_app.ui->x_dataedit( cells, x_size );
 }
 
 /**************************************************************************************/
 	void
-view_change_dat( size_t index, float new_val )
+View::changeDat( size_t index, float new_val )
 {
+	View *view = this;
 	size_t	x_size, y_size, scaled_x_size, scaled_y_size, x, y;
+
+	/* Phase 13b: same precondition as View::dataEdit(), which is the only
+	 * thing that can put a cell on screen for this to be called back
+	 * with. Silent: the grid should not exist at all in that state, so
+	 * there is nobody to report to. */
+	if( ! view->has2dImage() )
+		return;
 
 	view->data_status = ViewDataStatus::Edited;
 
@@ -2619,34 +2323,46 @@ view_change_dat( size_t index, float new_val )
 		view->data[x + (x_size)*y], new_val );
 
 	view->data[x + (x_size)*y] = new_val;
-	init_saveframes();
-	lockout_view_changes = true;
-	if( data_to_pixels( view ) < 0 ) {
-		in_timer_clear();
+	view->initSaveframes();
+	{
+	LockoutViewChangesGuard lockout_guard;
+	if( view->dataToPixels() < 0 ) {
+		g_app.ui->in_timer_clear();
 		if( view->variable->global_min == view->variable->global_max )
-			invalidate_variable( view->variable );
+			invalidate_variable( view->variable, g_app.session, *g_app.ui );
 		return;
 		}
-	lockout_view_changes = false;
-	in_set_2d_size  ( scaled_x_size, scaled_y_size );
-	in_draw_2d_field( view->pixels.data(), scaled_x_size, scaled_y_size, 0 );
+	}
+	g_app.ui->in_set_2d_size  ( scaled_x_size, scaled_y_size );
+	g_app.ui->in_draw_2d_field( view->pixels.data(), scaled_x_size, scaled_y_size, 0 );
 }
 
 /**************************************************************************************/
 	void
-view_data_edit_dump( void )
+View::dataEditDump()
 {
+	View *view = this;
 	char	filename[1024], *dim_name, *var_name;
 	int	ncid, dims[2];
 	Message	message;
 	size_t	x_size, y_size, start[2], count[2];
 	int	x_dimid, y_dimid, varid, err;
 
+	/* Phase 13b: indexes size[] and dim[] by both display axes, and writes
+	 * x_size*y_size floats out of view->data. Reached from
+	 * view_data_edit_warn(), i.e. from allocStorage() on the *next*
+	 * variable switch, so the View here is not necessarily the one the
+	 * edits were made on. */
+	if( ! view->has2dImage() ) {
+		in_error( "There is no 2-D data field to save for this variable." );
+		return;
+		}
+
 	if( view->data_status != ViewDataStatus::Edited ) {
 		fprintf( stderr, "Warning!  Data is NOT CHANGED!\n" );
 		}
 
-	message = in_choose_save_file( "Dump data to netCDF file", "dump.data", filename, sizeof(filename) );
+	message = g_app.ui->in_choose_save_file( "Dump data to netCDF file", "dump.data", filename, sizeof(filename) );
 	if( message == Message::OK ) {
 		ncid = nccreate( filename, NC_CLOBBER );
 
@@ -2681,120 +2397,33 @@ view_data_edit_dump( void )
 }
 
 /**************************************************************************************/
-	static void
-view_data_edit_warn()
+	void
+view_data_edit_warn( ViewerSession &session, ViewerUi &ui )
 {
 	Message	message;
+	std::unique_ptr<ViewState> &view = session.activeView();
 
-	message = in_dialog( "Warning!  Data edits will be lost unless you save them now.\nSave them now?", true );
-	if( message == Message::Cancel ) 
-		return;
-
-	view_data_edit_dump();
-}
-
-/**************************************************************************************
- * Plot all the data along the plot_XY_axis for this (X,Y) position.  This is
- * the routine called when the user selects an (X,Y) position by clicking on
- * the 2-D color contour window.  
- */
-	void
-plot_XY()
-{
-	int	X_axis, i, x_window, y_window;
-	size_t	data_x, data_y, x_size, y_size, n;
-
-	// Upstream's Xt canvas widget never has this wired up to a live click
-	// until a variable is actually being displayed, so 'view' being NULL
-	// here never came up there. Our ImageView is a plain Fl_Widget that
-	// accepts clicks from the moment the window is shown -- clicking the
-	// still-empty 2-D pane before selecting any variable reaches this
-	// function with view == NULL and crashed (segfault dereferencing
-	// view->plot_XY_axis) instead of upstream's implicit no-op.
+	/* Phase 13b: the only caller (View::allocStorage()) runs with a View
+	 * in hand, so this is defence in depth rather than a reproduced
+	 * crash -- but it is the one path here that dereferences `view`
+	 * without asking, and a dialog sits between the check and the use. */
 	if( view == NULL )
 		return;
 
-	X_axis = view->plot_XY_axis;
-	if( X_axis == -1 ) {
-		in_error( "Error! I have no valid axis to plot along!\n" );
+	message = ui.in_dialog( "Warning!  Data edits will be lost unless you save them now.\nSave them now?", true );
+	if( message == Message::Cancel )
 		return;
-		}
 
-	if( options.debug )
-		fprintf( stderr, "plot_XY: entering with axisid=%d\n", X_axis );
-
-	in_query_pointer_position( &x_window, &y_window );
-	if( (x_window < 0) || (y_window < 0) ) {
-		fprintf( stderr, "OUT OF WINDOW!!\n" );
-		return;
-		}
-
-	mouse_xy_to_data_xy( x_window, y_window, options.blowup, &data_x, &data_y );
-
-	x_size = view->variable->size[view->x_axis_id];
-	y_size = view->variable->size[view->y_axis_id];
-
-	/* Make sure we don't go outside the limits */
-	data_x = ( (data_x >= x_size ) ? x_size-1 : data_x );
-	data_y = ( (data_y >= y_size ) ? y_size-1 : data_y );
-
-	/* Invert Y because the reporting counts from the
-	 * UPPER LEFT, not the lower left like we want
-	 * it to.  If the *picture* is inverted, don't flip
-	 * y!
-	 */
-	if( !options.invert_physical )
-		data_y = y_size - data_y - 1;
-
-	std::vector<size_t> start( view->variable->n_dims );
-	std::vector<size_t> count( view->variable->n_dims );
-
-	/* Compute start and count arrays for data to plot.  Note that
-	 * the ordering of the following lines is important.  We first
-	 * set to the base variable place.  We then insert the place
-	 * in the window that was clicked upon.  We then set the X
-	 * axis to have a full count of all elements be plotted.
-	 */
-        n = view->variable->size[X_axis];
-	for( i=0; i<view->variable->n_dims; i++ ) {
-		start[i] = view->var_place[i];
-		count[i] = 1L;
-		}
-	start[view->x_axis_id] = data_x;
-	start[view->y_axis_id] = data_y;
-
-	/* Handle the lines on the plot.
-	 */
-	view->plot_XY_nlines++;
-	if( view->plot_XY_nlines > MAX_LINES_PER_PLOT )
-		view->plot_XY_nlines = 1;
-
-	/* Save position so we can later replot if X axis changes
-	 */
-	for( i=0; i<view->variable->n_dims; i++ ) {
-		view->plot_XY_position[ view->plot_XY_nlines-1 ][i] = start[i];
-		if( options.debug )
-			fprintf( stderr, "Setting position for line %d, dim %d: %zu\n",
-				view->plot_XY_nlines-1, i, start[i] );
-		}
-
-	start[X_axis] = 0L;
-	count[X_axis] = n;
-
-	if( options.debug )
-		fprintf( stderr, "plot_XY: about to call plot_XY_sc\n" );
-	plot_XY_sc( start.data(), count.data() );
-
-	if( options.debug )
-		fprintf( stderr, "plot_XY: exiting\n" );
+	view->dataEditDump();
 }
 
 /**************************************************************************************
  * Set the axis along which to plot to the passed name.
  */
 	void
-view_set_XY_plot_axis( char *label )
+View::setXYPlotAxis( char *label )
 {
+	View *view = this;
 	int		dim_to_plot, i, j;
 	char		message[1024];
 
@@ -2822,7 +2451,7 @@ view_set_XY_plot_axis( char *label )
 	std::vector<size_t> start( view->variable->n_dims );
 	std::vector<size_t> count( view->variable->n_dims );
 
-	unlock_plot();
+	g_app.ui->unlock_plot();
 
 	for( i=0; i<view->plot_XY_nlines; i++ ) {
 		/* Change start and count to reflect new axis selection */
@@ -2834,23 +2463,25 @@ view_set_XY_plot_axis( char *label )
 		count[view->plot_XY_axis] = view->variable->size[view->plot_XY_axis];
 		if( options.debug )
 			fprintf( stderr, "view_set_XY_plot_axis: about to call plot_XY_sc\n" );
-		plot_XY_sc( start.data(), count.data() );
+		view->plotXYSc( start.data(), count.data() );
 		}
 }
 
 /**************************************************************************************
  * Plot all the data along the specified start and count
  */
-	static void
-plot_XY_sc( size_t *start, size_t *count )
+	void
+View::plotXYSc( size_t *start, size_t *count )
 {
+	View *view = this;
+	ViewerUi	&ui = *g_app.ui;
 	size_t	i_size;
 	int	n_misplace=30, n_missing_eliminated;
 	long	i, j, k, n, misplace_index[30];
 	float	t_xval, t_yval, tol, *tmp_yvals;
 	double	y_min, y_max, temp_double, bound_min, bound_max;
 	char	x_axis_title[132], y_axis_title[132], temp2_string[128], legend[512];
-	char	title[512], temp_string[128], *dim_name;
+	char	title[512], temp_string[1024], *dim_name;
 	std::string units, long_name, file_title;
 	char	message[512];
 	int	has_bounds, type, all_same, have_done_one, dim_to_plot, plot_index;
@@ -2911,7 +2542,7 @@ plot_XY_sc( size_t *start, size_t *count )
 	std::vector<float> tmp_yvals_buf( n );
 	tmp_yvals = tmp_yvals_buf.data();
 
-	in_set_cursor_busy();
+	ui.in_set_cursor_busy();
 
 	/* Get the X values for the plot. */
 	for(i_size=0L; i_size<static_cast<size_t>(n); i_size++) {
@@ -2920,7 +2551,7 @@ plot_XY_sc( size_t *start, size_t *count )
 			virt_cursor_place[i] = view->var_place[i];
 		virt_cursor_place[dim_to_plot] = i_size;
 
-		type = fi_dim_value( view->variable, dim_to_plot, i_size, &temp_double, 
+		type = g_app.session.dataset().dimValue( view->variable, dim_to_plot, i_size, &temp_double, 
 				temp_string, &has_bounds, &bound_min, &bound_max, virt_cursor_place );
 		if( type == NC_DOUBLE )
 			plot_XY_xvals[i_size] = temp_double;
@@ -2936,7 +2567,7 @@ plot_XY_sc( size_t *start, size_t *count )
 			plot_XY_xvals[i] = (double)i;
 
 	/* Get the y values (values to be plotted) */
-	fi_get_data( view->variable, start, count, tmp_yvals );
+	g_app.session.dataset().getData( view->variable, start, count, tmp_yvals );
 
 	/* Eliminate the missing values */
 	j = 0;
@@ -2976,7 +2607,7 @@ plot_XY_sc( size_t *start, size_t *count )
 
 	/* Get the X axis title */
 	snprintf( x_axis_title, sizeof(x_axis_title), "%s", view->variable->dim[dim_to_plot]->name.c_str() );
-	units    = fi_dim_units( view->variable->files.front().get()->id, dim_name );
+	units    = view->variable->files.front()->file->dimUnits( dim_name );
 	if( !units.empty() ) {
 		strncat( x_axis_title, " (", sizeof(x_axis_title) - strlen(x_axis_title) - 1 );
 		strncat( x_axis_title, units.c_str(), sizeof(x_axis_title) - strlen(x_axis_title) - 1 );
@@ -2998,7 +2629,7 @@ plot_XY_sc( size_t *start, size_t *count )
 			y_max = plot_XY_yvals[i];
 		}
 	if( all_same ) {
-		in_set_cursor_normal();
+		ui.in_set_cursor_normal();
 		snprintf( message, 511, "All values are identical: %f\n", plot_XY_yvals[0] );
 		in_error( message );
 		return;
@@ -3006,7 +2637,7 @@ plot_XY_sc( size_t *start, size_t *count )
 
 	/* Get the Y (which is the active variable) axis title */
 	snprintf( y_axis_title, sizeof(y_axis_title), "%s", view->variable->name.c_str() );
-	units = fi_var_units( view->variable->files.front().get()->id, view->variable->name );
+	units = view->variable->files.front()->file->varUnits( view->variable->name );
 	if( !units.empty() ) {
 		strncat( y_axis_title, " (", sizeof(y_axis_title) - strlen(y_axis_title) - 1 );
 		strncat( y_axis_title, units.c_str(), sizeof(y_axis_title) - strlen(y_axis_title) - 1 );
@@ -3014,13 +2645,13 @@ plot_XY_sc( size_t *start, size_t *count )
 		}
 
 	/* Get the overall plot title */
-	long_name = fi_long_var_name( view->variable->files.front().get()->id,
+	long_name = view->variable->files.front()->file->longVarName(
 				view->variable->name );
 	if( !long_name.empty() )
 		snprintf( title, sizeof(title), "%s", long_name.c_str() );
 	else
 		snprintf( title, sizeof(title), "%s", view->variable->name.c_str() );
-	file_title = fi_title( view->variable->files.front().get()->id );
+	file_title = view->variable->files.front()->file->title();
 	if( !file_title.empty() ) {
 		strncat( title, " from ", sizeof(title) - strlen(title) - 1 );
 		strncat( title, file_title.c_str(), sizeof(title) - strlen(title) - 1 );
@@ -3044,14 +2675,28 @@ plot_XY_sc( size_t *start, size_t *count )
 		if( (i != dim_to_plot) && (view->variable->dim[i].get() != NULL)) {
 			if( have_done_one )
 				strncat( legend, ", ", sizeof(legend) - strlen(legend) - 1 );
-			type = fi_dim_value( view->variable, i, *(start+i), &temp_double, temp_string,
+			type = g_app.session.dataset().dimValue( view->variable, i, *(start+i), &temp_double, temp_string,
 					&has_bounds, &bound_min, &bound_max, view->var_place.data() );
 			if( type == NC_DOUBLE ) {
 				snprintf( temp2_string, 127, "%lg", temp_double );
 				strncat( legend, temp2_string, sizeof(legend) - strlen(legend) - 1 );
 				}
-			else
-				strncat( legend, temp_string, sizeof(legend) - strlen(legend) - 1 );
+			else	{
+				/* Phase 12h follow-up: temp_string is 1024 bytes (widened
+				 * in Phase 12g to satisfy Dataset::dimValue()'s ≥1024-byte
+				 * contract) while legend is only 512 -- GCC's
+				 * -Wstringop-truncation can prove this strncat's source
+				 * may be longer than the remaining space and flags it as
+				 * -Werror, even though truncating here is intentional and
+				 * safe. Same fix as colormap_library.cc's -- make the
+				 * truncation explicit via memcpy/strnlen so nothing is
+				 * left for the heuristic to warn about. */
+				size_t used = strlen(legend);
+				size_t remaining = sizeof(legend) - used - 1;
+				size_t copy_len = strnlen( temp_string, remaining );
+				memcpy( legend+used, temp_string, copy_len );
+				legend[used+copy_len] = '\0';
+				}
 			have_done_one = true;
 			}
 	strncat( legend, ")", sizeof(legend) - strlen(legend) - 1 );
@@ -3083,26 +2728,27 @@ plot_XY_sc( size_t *start, size_t *count )
 		fprintf( stderr, "     ytitle=%s\n", y_axis_title );
 		fprintf( stderr, "     title =%s\n", title );
 		}
-	plot_index = in_popup_XY_graph( n, dim_to_plot, plot_XY_xvals.data(),
+	plot_index = ui.in_popup_XY_graph( n, dim_to_plot, plot_XY_xvals.data(),
 			plot_XY_yvals.data(), x_axis_title, y_axis_title,
 			title, legend, dimlist );
-	
+
 	/* Save the X dimension for this plot, so that we can later format
 	 * that dim's time values if requested (while the mouse is inside
 	 * that plot's window).
 	 */
-	if( plot_index != -1 ) 
+	if( plot_index != -1 )
 		plot_XY_dim[plot_index] = view->variable->dim[dim_to_plot].get();
 
-	in_set_cursor_normal();
+	ui.in_set_cursor_normal();
 	if( options.debug ) 
 		fprintf( stderr, "plot_XY_sc: leaving\n" );
 }
 
 /**************************************************************************************/
 	void
-view_plot_XY_fmt_x_val( float val, int dimindex, char *s, size_t s_len )
+View::plotXYFmtXVal( float val, int dimindex, char *s, size_t s_len )
 {
+	View *view = this;
 	NCDim	*dim;
 
 	dim = view->variable->dim[dimindex].get();
@@ -3114,20 +2760,22 @@ view_plot_XY_fmt_x_val( float val, int dimindex, char *s, size_t s_len )
 
 /**************************************************************************************/
 	void
-view_information( void )
+View::information()
 {
-	in_display_stuff( netcdf_att_string( view->variable->files.front().get()->id,
-						view->variable->name ).c_str(),
-			view->variable->name.c_str() );
+	g_app.ui->in_display_stuff( variable->files.front().get()->file->attString(
+						variable->name ).c_str(),
+			variable->name.c_str() );
 }
 
 /**************************************************************************************/
-	static void
-invalidate_variable( NCVar *var )
+	void
+invalidate_variable( NCVar *var, ViewerSession &session, ViewerUi &ui )
 {
-	x_set_var_sensitivity( const_cast<char *>(view->variable->name.c_str()), false );
-	set_buttons( BUTTONS_ALL_OFF );
-	view = NULL;
+	std::unique_ptr<ViewState> &view = session.activeView();
+
+	ui.x_set_var_sensitivity( const_cast<char *>(view->variable->name.c_str()), false );
+	set_buttons( BUTTONS_ALL_OFF, ui );
+	view.reset();	/* deletes the View this used to just orphan */
 	options.blowup = 1;
 }
 
@@ -3168,7 +2816,6 @@ mouse_xy_to_data_xy( int mouse_x, int mouse_y, int blowup, size_t *data_x, size_
 		return;
 		}
 
-	
 	b = -blowup;
 	*data_x = mouse_x * b + (int)((double)b/2.0);
 	*data_y = mouse_y * b + (int)((double)b/2.0);
@@ -3177,16 +2824,27 @@ mouse_xy_to_data_xy( int mouse_x, int mouse_y, int blowup, size_t *data_x, size_
 /*======================================================================================
  * Return true if there is *any* missing data in the current view, and false otherwise
  */
-	int
-view_data_has_missing( View *v )
+	bool
+View::hasMissingData() const
 {
+	const View *v = this;
 	size_t 	nx, ny, i;
 	float	dat;
 
-	if( (v == NULL) || (v->variable == NULL))
+	if( v->variable == NULL )
 		return(true);
 
-	if( v->x_axis_id < 0 ) 
+	/* Phase 13b: the x_axis_id guard below was already right, but `data`
+	 * being *sized* is a separate precondition -- set_scan_variable()'s
+	 * 1-D path never calls allocStorage(), so a View can reach here with
+	 * a perfectly good x_axis_id and an empty buffer, and the read loop
+	 * then walks off the end of nothing (a real SIGSEGV, not a quiet
+	 * overread). "No data loaded" answers this question the same way
+	 * "no variable" does. */
+	if( v->data.empty() )
+		return(true);
+
+	if( v->x_axis_id < 0 )
 		return(true);
 	nx = v->variable->size[v->x_axis_id];
 
@@ -3208,7 +2866,7 @@ view_data_has_missing( View *v )
  * Change the current data transformation
  */
 	void
-view_change_transform( int delta )
+view_change_transform( int delta, ViewerUi &ui )
 {
 	int	transform_int = static_cast<int>(options.transform) + delta;
 	if( transform_int > N_TRANSFORMS )
@@ -3218,44 +2876,18 @@ view_change_transform( int delta )
 	options.transform = static_cast<Transform>(transform_int);
 
 	switch( options.transform ) {
-		case Transform::None   : in_set_label( Label::Transform, "Linear" ); break;
-		case Transform::Low    : in_set_label( Label::Transform, "Low"    ); break;
-		case Transform::Hi     : in_set_label( Label::Transform, "Hi"     ); break;
-		case Transform::Center : in_set_label( Label::Transform, "Center" ); break;
+		case Transform::None   : ui.in_set_label( Label::Transform, "Linear" ); break;
+		case Transform::Low    : ui.in_set_label( Label::Transform, "Low"    ); break;
+		case Transform::Hi     : ui.in_set_label( Label::Transform, "Hi"     ); break;
+		case Transform::Center : ui.in_set_label( Label::Transform, "Center" ); break;
 		default:
 			fprintf( stderr, "ncview: change_transform: unknown transform %d\n",
 				transform_int );
 			exit( -1 );
 		}
 
-	view_draw( true, false );
-	view_recompute_colorbar();
-}
-
-/***************************************************************************/
-void view_recompute_colorbar( void )
-{
-	/* The user might ask to rearrange colormaps before any
-	 * variable is selected. In that event, return 
-	 * immediately
-	 */
-	if( (view == NULL) || (view->variable == NULL))
-		return;
-
-	if( options.debug ) {
-		fprintf( stderr, "view_recompute_colorbar: entering\n" );
-		fprintf( stderr, "view_recompute_colorbar: about to call x_create_colorbar with user_min=%f user_max=%f transform=%d\n",
-				view->variable->user_min, view->variable->user_max, static_cast<int>(options.transform) );
-		}
-
-	x_create_colorbar( view->variable->user_min, view->variable->user_max, options.transform );
-
-	if( options.debug )
-		fprintf( stderr, "view_recompute_colorbar: about to call x_draw_colorbar" );
-	x_draw_colorbar();
-
-	if( options.debug )
-		fprintf( stderr, "view_recompute_colorbar: exiting\n" );
+	g_app.controller.draw( true, false );
+	g_app.controller.recomputeColorbar();
 }
 
 /***************************************************************************/

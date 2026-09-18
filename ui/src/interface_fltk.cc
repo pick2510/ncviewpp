@@ -3,19 +3,29 @@
  *
  * Copyright (C) 2026 Dominik Strebel
  *
- * The free-function side of the ncview/interface.h toolkit seam: every
- * function ncview_core calls (in_*) or that core calls directly by name
- * (set_options, x_range, ...) is implemented here, delegating to the
- * MainWindow singleton (ui/include/ncview_ui/main_window.h). This is the
- * FLTK replacement for upstream's src/interface/interface.c +
+ * FltkViewerUi (ncview_ui/fltk_viewer_ui.h): the FLTK implementation of
+ * ncview/viewer_ui.h's ViewerUi interface, delegating to the MainWindow
+ * singleton (ui/include/ncview_ui/main_window.h). This is the FLTK
+ * replacement for upstream's src/interface/interface.c +
  * src/interface/x_interface.c.
+ *
+ * OOP_redesign plan, Step 9b: these were free functions (in_ / x_
+ * prefixed) directly satisfying ncview/interface.h's declarations until this step;
+ * they're now FltkViewerUi methods instead, with core/src/viewer_ui_bridge.cc
+ * providing the free-function forwarders onto whichever ViewerUi is
+ * currently installed. Bodies are unchanged from the free-function form
+ * (a pure rename), including calls between them, which still resolve via
+ * ordinary unqualified member lookup, since both are now members of the
+ * same class.
  */
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <FL/Fl.H>
@@ -32,15 +42,17 @@
 #include <FL/fl_ask.H>
 #include <FL/fl_draw.H>
 
+#include "ncview_ui/fltk_viewer_ui.h"
 #include "ncview_ui/main_window.h"
 #include "ncview_ui/plot_window.h"
 
+using ncview_ui::FltkViewerUi;
 using ncview_ui::MainWindow;
 using ncview_ui::instance;
 
 /* ---- lifecycle / event loop ------------------------------------------- */
 
-void in_parse_args( int *p_argc, char **argv )
+void FltkViewerUi::in_parse_args( int *p_argc, char **argv )
 {
 	// FLTK consumes its own -display/-geometry etc. via Fl::args() if
 	// ever needed; ncview's own option parser (parse_options(), M4) runs
@@ -48,14 +60,14 @@ void in_parse_args( int *p_argc, char **argv )
 	(void)p_argc; (void)argv;
 }
 
-void in_initialize( void )
+void FltkViewerUi::in_initialize( void )
 {
 	// Upstream read this (and similar) from an X application-defaults
 	// resource ("Ncview*blowupDefaultSize: 300", fallback_resources.h);
-	// it's plain core state (view.cc:calculate_blowup divides by it),
+	// it's plain core state (view.cc:View::calculateBlowup() divides by it),
 	// not something routed through a seam function, so ncview_ui just
 	// sets it directly. Leaving it at its zero-initialized default is a
-	// real bug, not a graceful default: calculate_blowup() divides by
+	// real bug, not a graceful default: View::calculateBlowup() divides by
 	// it unconditionally, producing a divide-by-zero -> inf -> UB
 	// float-to-int conversion (observed as options.blowup becoming
 	// INT_MIN on this machine).
@@ -67,32 +79,40 @@ void in_initialize( void )
 	instance()->populateVarList();
 	instance()->window()->show();
 	if( const char *sel = getenv( "NCVIEW_TEST_AUTOSELECT" ) ) {
-		NCVar *v = variables.empty() ? nullptr : variables[0].get();
+		auto &vars = g_app.session.dataset().variablesMutable();
+		NCVar *v = vars.empty() ? nullptr : vars[0].get();
 		// A specific variable name may be given (besides "1", meaning "just
 		// pick the first one"); useful for driving a chosen 2-D field in
 		// headless/manual testing without a real mouse.
 		if( std::strcmp( sel, "1" ) != 0 )
-			for( auto &c : variables )
+			for( auto &c : vars )
 				if( c->name == sel ) { v = c.get(); break; }
 		if( v != nullptr )
 			in_variable_selected( v->name.c_str() );
 	}
 	if( const char *d = getenv( "NCVIEW_TEST_DIALOG" ) ) {
-		if( std::strcmp( d, "range" ) == 0 ) do_range( Modifier::M1 );
-		else if( std::strcmp( d, "options" ) == 0 ) do_options( Modifier::M1 );
-		else if( std::strcmp( d, "dimset" ) == 0 ) do_dimset( Modifier::M1 );
-		else if( std::strcmp( d, "info" ) == 0 ) view_information();
-		else if( std::strcmp( d, "dataedit" ) == 0 ) view_data_edit();
-		else if( std::strcmp( d, "plot" ) == 0 ) plot_XY();
-		else if( std::strcmp( d, "overlay" ) == 0 ) do_overlay( OVERLAY_P8DEG, nullptr, false );
-		else if( std::strcmp( d, "print" ) == 0 ) {
+		// Same {name, action} table style as NCVIEW_TEST_BUTTON below --
+		// wrapped in std::function since, unlike the button table's uniform
+		// in_button_pressed(id, modifier) dispatch, these 8 actions have
+		// genuinely different call shapes (some take a Modifier, some take
+		// none, "print" defers to the next event-loop tick).
+		static const struct { const char *name; std::function<void()> action; } kDialogs[] = {
+			{ "range",    []{ g_app.controller.range( Modifier::M1 ); } },
+			{ "options",  []{ g_app.controller.optionsDialog( Modifier::M1 ); } },
+			{ "dimset",   []{ g_app.controller.dimset( Modifier::M1 ); } },
+			{ "info",     []{ view->information(); } },
+			{ "dataedit", []{ view->dataEdit(); } },
+			{ "plot",     []{ g_app.controller.plotXY(); } },
+			{ "overlay",  []{ do_overlay( OVERLAY_P8DEG, nullptr, false ); } },
 			// do_print() reads the printopts defaults that ncview_main()
 			// sets up via print_init() -- which runs *after* in_initialize()
 			// returns (see ncview.cc). Defer to the first event-loop tick so
 			// the manual "print" test hook sees the same state a real
 			// button press would.
-			Fl::add_timeout( 0.0, []( void * ) { do_print(); } );
-		}
+			{ "print",    []{ Fl::add_timeout( 0.0, []( void * ) { do_print(); } ); } },
+		};
+		for( const auto &e : kDialogs )
+			if( std::strcmp( d, e.name ) == 0 ) { e.action(); break; }
 	}
 	if( const char *b = getenv( "NCVIEW_TEST_BUTTON" ) ) {
 		// Drives any button through the exact same in_button_pressed() path
@@ -121,19 +141,19 @@ void in_initialize( void )
 	}
 }
 
-void in_process_user_input( void )
+void FltkViewerUi::in_process_user_input( void )
 {
 	// Upstream's contract: never returns, loops handling UI events.
 	Fl::run();
 }
 
-Stringlist *in_choose_input_files( void )
+Stringlist *FltkViewerUi::in_choose_input_files( void )
 {
 	// One multi-select dialog covers both cases ncview_main() wants:
 	// picking a single file, or picking a whole run's worth of
 	// one-file-per-timestep output to open as a series -- the latter is
 	// exactly the "virtual variable" multi-file merge core already does
-	// for however many filenames it's handed (see add_var_to_list() in
+	// for however many filenames it's handed (see Dataset::addVariable() in
 	// util.cc), it's just normally spelled out on the command line.
 	Fl_Native_File_Chooser chooser;
 	chooser.title( "Open NetCDF File(s)" );
@@ -157,13 +177,13 @@ Stringlist *in_choose_input_files( void )
 	return file_list;
 }
 
-void in_flush( void )
+void FltkViewerUi::in_flush( void )
 {
 	Fl::flush();
 }
 
-void in_set_cursor_busy( void )   { instance()->setCursorBusy( true ); }
-void in_set_cursor_normal( void ) { instance()->setCursorBusy( false ); }
+void FltkViewerUi::in_set_cursor_busy( void )   { instance()->setCursorBusy( true ); }
+void FltkViewerUi::in_set_cursor_normal( void ) { instance()->setCursorBusy( false ); }
 
 /* ---- timers ------------------------------------------------------------ */
 
@@ -189,13 +209,13 @@ void timerTrampoline( void *data )
 }
 } // namespace
 
-void in_timer_clear( void )
+void FltkViewerUi::in_timer_clear( void )
 {
 	Fl::remove_timeout( timerTrampoline );
 	g_pending_timer.reset();
 }
 
-void in_timer_set( std::function<void()> callback, unsigned long delay_millisec )
+void FltkViewerUi::in_timer_set( std::function<void()> callback, unsigned long delay_millisec )
 {
 	in_timer_clear();
 	g_pending_timer = std::make_unique<std::function<void()>>( std::move( callback ) );
@@ -204,38 +224,33 @@ void in_timer_set( std::function<void()> callback, unsigned long delay_millisec 
 
 /* ---- labels / sensitivity / dim buttons -------------------------------- */
 
-void in_set_label( Label label_id, const char *string )
+void FltkViewerUi::in_set_label( Label label_id, const char *string )
 {
 	if( string == nullptr ) return;
 	instance()->setLabel( label_id, string );
 }
 
-void in_set_sensitive( Button button_id, int state )
+void FltkViewerUi::in_set_sensitive( Button button_id, int state )
 {
 	instance()->setSensitive( button_id, state );
 }
 
-void in_var_set_sensitive( const char *var_name, int sensitivity )
-{
-	x_set_var_sensitivity( var_name, sensitivity );
-}
-
-void in_indicate_active_var( const char *var_name )
+void FltkViewerUi::in_indicate_active_var( const char *var_name )
 {
 	instance()->indicateActiveVar( var_name );
 }
 
-void in_indicate_active_dim( Dimension dimension, const char *dim_name )
+void FltkViewerUi::in_indicate_active_dim( Dimension dimension, const char *dim_name )
 {
 	instance()->indicateActiveDim( dimension, dim_name );
 }
 
-void in_fill_dim_info( const NCDim *d, int please_flip )
+void FltkViewerUi::in_fill_dim_info( const NCDim *d, int please_flip )
 {
 	instance()->fillDimInfo( d, please_flip );
 }
 
-void in_set_cur_dim_value( const char *name, const char *string )
+void FltkViewerUi::in_set_cur_dim_value( const char *name, const char *string )
 {
 	instance()->setCurDimValue( name, string );
 }
@@ -280,34 +295,34 @@ void dumpFrameToPng( const unsigned char *data, size_t width, size_t height, siz
 }
 } // namespace
 
-void in_draw_2d_field( const unsigned char *data, size_t width, size_t height, size_t timestep )
+void FltkViewerUi::in_draw_2d_field( const unsigned char *data, size_t width, size_t height, size_t timestep )
 {
 	if( options.dump_frames )
 		dumpFrameToPng( data, width, height, timestep );
 	instance()->draw2DField( data, width, height, timestep );
 }
 
-void in_create_colormap( const char *name, const ncv_pixel r[256], const ncv_pixel g[256], const ncv_pixel b[256] )
+void FltkViewerUi::in_create_colormap( const char *name, const ncv_pixel r[256], const ncv_pixel g[256], const ncv_pixel b[256] )
 {
 	instance()->createColormap( name, r, g, b );
 }
 
-char *in_install_next_colormap( int do_widgets )
+char *FltkViewerUi::in_install_next_colormap( int do_widgets )
 {
 	return instance()->installNextColormap( do_widgets );
 }
 
-char *in_install_prev_colormap( int do_widgets )
+char *FltkViewerUi::in_install_prev_colormap( int do_widgets )
 {
 	return instance()->installPrevColormap( do_widgets );
 }
 
-char *in_install_colormap_by_name( const char *name, int do_widgets )
+char *FltkViewerUi::in_install_colormap_by_name( const char *name, int do_widgets )
 {
 	return instance()->installColormapByName( name, do_widgets );
 }
 
-int in_set_2d_size( size_t width, size_t height )
+int FltkViewerUi::in_set_2d_size( size_t width, size_t height )
 {
 	int r = instance()->set2DSize( width, height );
 	in_flush();
@@ -318,13 +333,13 @@ int in_set_2d_size( size_t width, size_t height )
 	// registered to call change_view"). FLTK has no equivalent wiring in
 	// this port, so without this the very first frame of a newly
 	// selected variable never actually gets drawn.
-	if( r >= 1 ) change_view( 0, FRAMES );
+	if( r >= 1 ) g_app.controller.stepView( 0, FRAMES );
 	return r;
 }
 
 /* ---- pointer / mouse ---------------------------------------------------- */
 
-void in_query_pointer_position( int *x, int *y )
+void FltkViewerUi::in_query_pointer_position( int *x, int *y )
 {
 	// Must return the same data-buffer-pixel coordinate space
 	// view_report_position() gets (ImageView::screenToBuffer() undoes the
@@ -338,7 +353,7 @@ void in_query_pointer_position( int *x, int *y )
 
 /* ---- dialogs / errors ---------------------------------------------------- */
 
-Message in_dialog( const char *message, int want_cancel_button )
+Message FltkViewerUi::in_dialog( const char *message, int want_cancel_button )
 {
 	if( want_cancel_button ) {
 		int r = fl_choice( "%s", "Cancel", "OK", nullptr, message );
@@ -348,7 +363,7 @@ Message in_dialog( const char *message, int want_cancel_button )
 	return Message::OK;
 }
 
-Message in_choose_save_file( const char *title, const char *default_name, char *ret_path, size_t ret_path_size )
+Message FltkViewerUi::in_choose_save_file( const char *title, const char *default_name, char *ret_path, size_t ret_path_size )
 {
 	Fl_Native_File_Chooser chooser;
 	chooser.title( title );
@@ -366,14 +381,14 @@ Message in_choose_save_file( const char *title, const char *default_name, char *
 	return Message::OK;
 }
 
-void x_error( const char *message )
+void FltkViewerUi::x_error( const char *message )
 {
 	fl_alert( "%s", message ? message : "(unknown error)" );
 }
 
 /* ---- variable-info popup -------------------------------------------------- */
 
-void in_display_stuff( const char *s, const char *var_name )
+void FltkViewerUi::in_display_stuff( const char *s, const char *var_name )
 {
 	char window_title[132];
 	snprintf( window_title, sizeof(window_title), "Attributes of \"%s\"", var_name ? var_name : "" );
@@ -406,13 +421,14 @@ namespace {
 
 // One data-edit window can be open at a time (matches upstream: x_dataedit()
 // runs its own blocking mini event loop, so only one is ever live). The
-// table cells are backed directly by the char** upstream hands us (each
-// entry is a 32-byte buffer from view_data_edit()), so editing a cell just
-// rewrites that buffer in place.
+// table cells are backed by a reference to the std::vector<std::string>
+// View::dataEdit() built and handed us (Phase 12b -- was a raw char**
+// nobody freed); editing a cell rewrites that string in place, same as the
+// old fixed-size buffer did.
 class DataEditTable : public Fl_Table {
 public:
-	DataEditTable( int x, int y, int w, int h, int nx, int ny, char **text )
-		: Fl_Table( x, y, w, h ), nx_( nx ), text_( text )
+	DataEditTable( int x, int y, int w, int h, int nx, int ny, std::vector<std::string> &cells )
+		: Fl_Table( x, y, w, h ), nx_( nx ), cells_( cells )
 	{
 		rows( ny );
 		cols( nx );
@@ -424,6 +440,8 @@ public:
 	}
 
 	int nx() const { return nx_; }
+	size_t cellCount() const { return cells_.size(); }
+	std::string &cellAt( int index ) { return cells_[index]; }
 
 protected:
 	void draw_cell( TableContext context, int R, int C, int X, int Y, int W, int H ) override
@@ -434,15 +452,15 @@ protected:
 		fl_color( FL_WHITE );
 		fl_rectf( X, Y, W, H );
 		fl_color( FL_BLACK );
-		if( text_ && text_[index] )
-			fl_draw( text_[index], X + 3, Y, W - 6, H, FL_ALIGN_LEFT );
+		if( index >= 0 && (size_t)index < cells_.size() )
+			fl_draw( cells_[index].c_str(), X + 3, Y, W - 6, H, FL_ALIGN_LEFT );
 		fl_rect( X, Y, W, H );
 		fl_pop_clip();
 	}
 
 private:
 	int nx_;
-	char **text_;
+	std::vector<std::string> &cells_;
 };
 
 DataEditTable *g_dataedit_table = nullptr;
@@ -455,21 +473,20 @@ void dataeditDoneCallback( Fl_Widget *w, void *data )
 
 void dataeditDumpCallback( Fl_Widget *, void * )
 {
-	view_data_edit_dump();
+	view->dataEditDump();
 }
 
 } // namespace
 
-void x_dataedit( char **text, int nx )
+void FltkViewerUi::x_dataedit( std::vector<std::string> &cells, int nx )
 {
-	int n = 0;
-	while( text[n] != nullptr ) n++;
+	int n = (int)cells.size();
 	int ny = nx > 0 ? n / nx : 0;
 	if( ny <= 0 ) return;
 
 	Fl_Double_Window win( 520, 420, "Data Edit" );
 	win.begin();
-	DataEditTable table( 10, 10, 500, 350, nx, ny, text );
+	DataEditTable table( 10, 10, 500, 350, nx, ny, cells );
 	table.when( FL_WHEN_RELEASE );
 	auto *dump_btn = new Fl_Button( 10, 370, 100, 30, "Dump Data" );
 	dump_btn->callback( dataeditDumpCallback );
@@ -486,11 +503,11 @@ void x_dataedit( char **text, int nx )
 		if( t->callback_context() != Fl_Table::CONTEXT_CELL || Fl::event() != FL_RELEASE ) return;
 		int row = t->callback_row(), col = t->callback_col();
 		int index = row * t->nx() + col;
-		char **cells = static_cast<char**>( t->user_data() );
-		if( cells == nullptr || cells[index] == nullptr ) return;
+		if( index < 0 || (size_t)index >= t->cellCount() ) return;
+		std::string &cell = t->cellAt( index );
 
 		char line[132];
-		strncpy( line, cells[index], sizeof(line)-1 );
+		strncpy( line, cell.c_str(), sizeof(line)-1 );
 		line[sizeof(line)-1] = '\0';
 		const char *result = fl_input( "Value:", line );
 		if( result == nullptr ) return;
@@ -498,16 +515,12 @@ void x_dataedit( char **text, int nx )
 		float new_val, dummy;
 		if( sscanf( result, "%f %f", &new_val, &dummy ) != 1 ) return;
 
-		view_change_dat( (size_t)index, new_val );
-		snprintf( cells[index], 32, "%-10.5g", new_val );
+		view->changeDat( (size_t)index, new_val );
+		char buf[32];
+		snprintf( buf, sizeof(buf), "%-10.5g", new_val );
+		cell = buf;
 		t->redraw();
 	} );
-	// Fl_Widget::argument() stores its value as a plain `long`, which
-	// truncates a pointer on Windows' LLP64 model (long stays 32-bit
-	// there even in a 64-bit build); user_data() stores a real void*
-	// with no such width loss, for the exact same "opaque callback
-	// payload" purpose here.
-	table.user_data( (void *)text );
 
 	g_dataedit_table = &table;
 
@@ -517,7 +530,7 @@ void x_dataedit( char **text, int nx )
 	g_dataedit_table = nullptr;
 }
 
-void in_set_edit_place( size_t index, int x, int y, int nx, int ny )
+void FltkViewerUi::in_set_edit_place( size_t index, int x, int y, int nx, int ny )
 {
 	(void)x; (void)y; (void)ny;
 	if( g_dataedit_table == nullptr || nx <= 0 ) return;
@@ -529,17 +542,12 @@ void in_set_edit_place( size_t index, int x, int y, int nx, int ny )
 	g_dataedit_table->redraw();
 }
 
-int in_set_scan_dims( const Stringlist *dim_list, const char *x_axis_name, const char *y_axis_name, Stringlist **new_dim_list )
+int FltkViewerUi::in_set_scan_dims( const Stringlist *dim_list, const char *x_axis_name, const char *y_axis_name, Stringlist **new_dim_list )
 {
 	return instance()->scanDimsDialog( dim_list, x_axis_name, y_axis_name, new_dim_list );
 }
 
-void in_change_min( const char *label )
-{
-	(void)label;
-}
-
-int in_popup_XY_graph( size_t n, int dimindex, double *xvals, double *yvals, const char *x_axis_title,
+int FltkViewerUi::in_popup_XY_graph( size_t n, int dimindex, double *xvals, double *yvals, const char *x_axis_title,
 	const char *y_axis_title, const char *title, const char *legend, const Stringlist *scannable_dims )
 {
 	if( scannable_dims == nullptr ) {
@@ -550,10 +558,20 @@ int in_popup_XY_graph( size_t n, int dimindex, double *xvals, double *yvals, con
 			title, legend, scannable_dims );
 }
 
-void in_popup_2d_window( void )   {}
-void in_popdown_2d_window( void ) {}
+// Phase 13c: both were empty no-ops. Upstream really did pop its 2-D
+// colour-contour window up and down as variables were selected; this port
+// dropped that on the grounds that the pane is a fixed child widget rather
+// than a separate window, and nothing appeared to depend on it. Something
+// did: set_scan_variable()'s 1-D path calls in_popdown_2d_window() exactly
+// so the *previous* variable's picture stops being on screen and, more to
+// the point, stops being clickable. With these empty, a click on that
+// stale picture ran ViewerController::plotXY() against a View with
+// y_axis_id == -1 -- an out-of-bounds heap write. Phase 13b guards that
+// from core's side; this stops it being reachable at all.
+void FltkViewerUi::in_popup_2d_window( void )   { instance()->setImageVisible( true ); }
+void FltkViewerUi::in_popdown_2d_window( void ) { instance()->setImageVisible( false ); }
 
-int in_report_auto_overlay( void )
+int FltkViewerUi::in_report_auto_overlay( void )
 {
 	// Upstream's x_report_auto_overlay() returns an X application-resource
 	// default ("Ncview*autoOverlay", app_data.auto_overlay) that's ANDed
@@ -569,12 +587,12 @@ int in_report_auto_overlay( void )
 
 /* ---- extra seam: real UI dialogs/state (M4 stubs for now) ---------------- */
 
-void set_options( void )
+void FltkViewerUi::set_options( void )
 {
 	instance()->setOptionsDialog();
 }
 
-Message printer_options( PrintOptions *po )
+Message FltkViewerUi::printer_options( PrintOptions *po )
 {
 	// do_print() calls this dialog before in_print() -- see the
 	// NCVIEW_TEST_PRINT_FILE handling there. Skip this modal too under the
@@ -697,7 +715,7 @@ void renderPrintPage( Fl_Paged_Device &dev, const PrintInfo &info, const PrintOp
 
 } // namespace
 
-void in_print( const PrintInfo &info, const PrintOptions &po )
+void FltkViewerUi::in_print( const PrintInfo &info, const PrintOptions &po )
 {
 	if( const char *test_file = getenv( "NCVIEW_TEST_PRINT_FILE" ) ) {
 		// Headless test hook (tests/ui_smoke.sh's "print" case): the real
@@ -725,54 +743,54 @@ void in_print( const PrintInfo &info, const PrintOptions &po )
 	printer.end_job();
 }
 
-Message x_range( float old_min, float old_max, float global_min, float global_max, float *new_min, float *new_max, int *allvars )
+Message FltkViewerUi::x_range( float old_min, float old_max, float global_min, float global_max, float *new_min, float *new_max, int *allvars )
 {
 	return instance()->rangeDialog( old_min, old_max, global_min, global_max, new_min, new_max, allvars );
 }
 
-int x_seen_colormap_name( const char *name )
+int FltkViewerUi::x_seen_colormap_name( const char *name )
 {
 	return instance()->seenColormapName( name ) ? 1 : 0;
 }
 
-void x_check_legal_colormap_loaded( void )
+void FltkViewerUi::x_check_legal_colormap_loaded( void )
 {
 	instance()->checkLegalColormapLoaded();
 }
 
-void x_create_colorbar( float user_min, float user_max, Transform transform )
+void FltkViewerUi::x_create_colorbar( float user_min, float user_max, Transform transform )
 {
 	instance()->createColorbar( user_min, user_max, transform );
 }
 
-void x_draw_colorbar( void )
+void FltkViewerUi::x_draw_colorbar( void )
 {
 	instance()->drawColorbar();
 }
 
-void x_force_set_invert_state( int state )
+void FltkViewerUi::x_force_set_invert_state( int state )
 {
 	(void)state;
 }
 
-void x_init_dim_info( const Stringlist *dim_list )
+void FltkViewerUi::x_init_dim_info( const Stringlist *dim_list )
 {
 	instance()->makeDimButtons( dim_list );
 }
 
-void x_set_var_sensitivity( const char *varname, int sens )
+void FltkViewerUi::x_set_var_sensitivity( const char *varname, int sens )
 {
 	(void)varname; (void)sens;
 }
 
-void unlock_plot( void ) { ncview_ui::unlockPlot(); }
+void FltkViewerUi::unlock_plot( void ) { ncview_ui::unlockPlot(); }
 
-Stringlist *get_persistent_X_state( void )
+Stringlist *FltkViewerUi::get_persistent_X_state( void )
 {
 	return nullptr;
 }
 
-void pix_to_rgb( ncv_pixel pix, int *r, int *g, int *b )
+void FltkViewerUi::pix_to_rgb( ncv_pixel pix, int *r, int *g, int *b )
 {
 	instance()->pixelToRgb( pix, r, g, b );
 }

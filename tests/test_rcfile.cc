@@ -28,57 +28,11 @@
 #include "ncview/includes.h"
 #include "ncview/defines.h"
 #include "ncview/protos.h"
+#include "support/scratch_home.h"
+
+using ncview_test::ScratchHome;
 
 namespace {
-
-// setenv/unsetenv are POSIX; MinGW's runtime doesn't declare them even under
-// -std=gnu++17. _putenv_s is the MSVCRT equivalent for both set and unset
-// (an empty value removes the variable).
-void set_env(const char *name, const std::string &value) {
-#ifdef _WIN32
-    _putenv_s(name, value.c_str());
-#else
-    setenv(name, value.c_str(), 1);
-#endif
-}
-void unset_env(const char *name) {
-#ifdef _WIN32
-    _putenv_s(name, "");
-#else
-    unsetenv(name);
-#endif
-}
-
-// RAII: creates a scratch directory, points $HOME at it, and restores the
-// real $HOME (or unsets it, matching whatever state it found) on
-// destruction -- so a failing REQUIRE partway through a test still leaves
-// $HOME as it was.
-struct ScratchHome {
-    std::filesystem::path dir;
-    std::string old_home;
-    bool had_home;
-
-    ScratchHome() {
-        auto tmpl = (std::filesystem::temp_directory_path() / "ncview_rc_test_XXXXXX").string();
-        REQUIRE(mkdtemp(&tmpl[0]) != nullptr);
-        dir = tmpl;
-
-        const char *old = getenv("HOME");
-        had_home = (old != nullptr);
-        if (had_home) old_home = old;
-        set_env("HOME", dir.string());
-    }
-    ~ScratchHome() {
-        if (had_home)
-            set_env("HOME", old_home);
-        else
-            unset_env("HOME");
-        std::error_code ec;
-        std::filesystem::remove_all(dir, ec);
-    }
-
-    std::string rc_path() const { return (dir / ".ncviewrc").string(); }
-};
 
 // handle_rc_file.cc writes via fopen(..., "a") in text mode, so on Windows
 // each '\n' comes out as "\r\n"; normalize that away so the hardcoded

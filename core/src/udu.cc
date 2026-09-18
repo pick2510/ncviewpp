@@ -1,7 +1,7 @@
 /*
  * Ncview by David W. Pierce.  A visual netCDF file viewer.
- * Copyright (C) 2026 Dominik Strebel
  * Copyright (C) 1993 through 2024 David W. Pierce
+ * Modifications Copyright (C) 2026 Dominik Strebel
  *
  * This program  is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 3 as 
@@ -192,8 +192,8 @@ TimeGranularity udu_calc_tgran( int fileid, NCVar *v, int dimid )
 	/* Get a delta time to analyze */
 	for( ii=0L; ii<v->n_dims; ii++ )
 		cursor_place[ii] = (int)((v->size[ii])/2.0);
-	fi_dim_value( v, dimid, 1L, &tval0_user, cval0, &has_bounds, &bound_min, &bound_max, cursor_place );
-	fi_dim_value( v, dimid, 2L, &tval1_user, cval1, &has_bounds, &bound_min, &bound_max, cursor_place );
+	g_app.session.dataset().dimValue( v, dimid, 1L, &tval0_user, cval0, &has_bounds, &bound_min, &bound_max, cursor_place );
+	g_app.session.dataset().dimValue( v, dimid, 2L, &tval1_user, cval1, &has_bounds, &bound_min, &bound_max, cursor_place );
 
 	/* Convert time vals from user units to seconds */
 	tval0_sec = cv_convert_double( convert_units_to_sec, tval0_user );
@@ -328,29 +328,12 @@ is_unique( char *units )
 	return( true );
 }
 
-/******************************************************************************/
-#else
-
-void udu_utinit( char *path )
-{
-	;
-}
-
-int udu_utistime( char *dimname, char *units )
-{
-	return( 0 );
-}
-
-TimeGranularity udu_calc_tgran( int fileid, NCVar *v, int dimid )
-{
-	/* No-UDUNITS2 build stub, preserved verbatim: upstream returned a
-	 * bare 0 here, not one of the TGRAN_* values. */
-	return( static_cast<TimeGranularity>(0) );
-}
-
-void udu_fmt_time( char *temp_string, size_t temp_string_len, double new_dimval, NCDim *dim, int include_granularity )
-{
-	snprintf( temp_string, temp_string_len-1, "%g", new_dimval );
-}
-
+/* No `#else` stub branch here: core/CMakeLists.txt unconditionally
+ * defines HAVE_UDUNITS2 and always builds the vendored UDUNITS-2, so a
+ * no-udunits build is not a supported configuration today (see
+ * PORTING.md's "refine the architecture" plan, Baseline section) -- the
+ * stub implementations of udu_utinit/udu_utistime/udu_calc_tgran/
+ * udu_fmt_time that used to live in an `#else` here could never actually
+ * be compiled, and were deleted as dead code (Phase 3d) rather than kept
+ * as a fallback for a configuration axis that doesn't exist. */
 #endif

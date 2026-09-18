@@ -62,9 +62,6 @@ using Stringlist = std::vector<StringlistEntry>;
  * illegally long string). */
 int 	stringlist_add_string( Stringlist **list, const char *new_string, const StringlistAux &aux = std::monostate{} );
 
-/* As above, but keeps the list in ascending alphabetic order by string. */
-int 	stringlist_add_string_ordered( Stringlist **list, const char *new_string, const StringlistAux &aux = std::monostate{} );
-
 /* Appends a copy of every entry in *src onto the end of *dest (re-indexed
  * by dest's own position, exactly as stringlist_add_string does). *src is
  * left unmodified. Returns 0 on success. */

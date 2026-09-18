@@ -25,10 +25,6 @@
 #include "ncview/protos.h"
 #include "test_udunits_helper.h"
 
-// Not declared in any header (see protos.h's own comment on why 'options'
-// and 'variables' are): the one other global data_to_pixels() depends on.
-extern std::vector<ncv_pixel> pixel_transform;
-
 namespace {
 
 // data_to_pixels() only ever reads pixel_transform[0] (missing-value
@@ -94,7 +90,7 @@ struct PixelFixture {
         view_get_scaled_size(blowup, nx, ny, &new_nx, &new_ny);
         view.pixels.assign(new_nx * new_ny, 0);
 
-        REQUIRE(data_to_pixels(&view) == 0);
+        REQUIRE(view.dataToPixels() == 0);
         return view.pixels;
     }
 };

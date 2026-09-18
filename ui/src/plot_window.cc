@@ -422,7 +422,7 @@ void PlotWindow::xAxisChoiceCallback( Fl_Widget *, void *data )
 	auto *pw = static_cast<PlotWindow*>( data );
 	int idx = pw->xaxis_choice_->value();
 	if( idx < 0 || idx >= (int)pw->axis_names_.size() ) return;
-	view_set_XY_plot_axis( (char *)pw->axis_names_[idx].c_str() );
+	view->setXYPlotAxis( (char *)pw->axis_names_[idx].c_str() );
 }
 
 void PlotWindow::xLogCallback( Fl_Widget *w, void *data )

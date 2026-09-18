@@ -1,9 +1,10 @@
 // Copyright (C) 2026 Dominik Strebel
 //
-// Characterization tests for the variable-list machinery in
-// core/src/util.cc: add_var_to_list() (and the internal new_fdblist()
-// helper it calls), get_var(), is_scannable(), and n_vars_in_list(). This
-// is the code Phase 5 of modernization.md replaces wholesale (NCVar/
+// Characterization tests for the variable-list machinery: Dataset::
+// addVariable() (and the internal new_fdblist() helper it calls) and
+// Dataset::findVariable() (core/src/dataset.cc), plus is_scannable() and
+// n_vars_in_list() (core/src/util.cc). This is the code Phase 5 of
+// modernization.md replaces wholesale (NCVar/
 // FDBlist's void*/AnyPtr-based intrusive linked lists become
 // std::vector<std::unique_ptr<...>>), and it had no test
 // before this file -- test_file_netcdf.cc only exercises the netcdf_*()
@@ -15,7 +16,8 @@
 // var->size (the NCVar-level accumulated size) grows as each file is
 // added, but each FDBlist's own var_size stays that file's real size, and
 // (more subtly) the NCDim objects in var->dim[] are only ever populated
-// from the FIRST file's fill_dim_structs() call -- dim->size does NOT
+// from the FIRST file's fill_dim_structs() call (called from Dataset::
+// addVariable()) -- dim->size does NOT
 // track the accumulated total the way var->size does. Getting this
 // relationship wrong in Phase 5's rewrite would be exactly the kind of
 // silent, hard-to-notice regression a characterization test is for.
@@ -114,9 +116,9 @@ TEST_CASE("add_var_to_list: a variable spanning two files becomes virtual, "
     ensure_ncview_misc_initialized();
 
     // Use a variable name unique to this test case (the global `variables`
-    // list persists for the whole test binary's lifetime -- see util.cc's
-    // get_var(), a plain linear scan with no removal API), so this can't
-    // collide with any other TEST_CASE's variable.
+    // list persists for the whole test binary's lifetime -- see Dataset::
+    // findVariable(), a plain linear scan with no removal API), so this
+    // can't collide with any other TEST_CASE's variable.
     const char *var_name = "temp_virtual_test";
     std::string path1 = make_virtual_piece(var_name, 3, 2, 2, 0.0);   // 3 timesteps
     std::string path2 = make_virtual_piece(var_name, 2, 2, 2, 3.0);  // 2 more, contiguous
@@ -124,9 +126,9 @@ TEST_CASE("add_var_to_list: a variable spanning two files becomes virtual, "
     int nvars_before = n_vars_in_list(variables);
 
     int fid1 = open_for_core(path1);
-    add_var_to_list(const_cast<char *>(var_name), fid1, const_cast<char *>(path1.c_str()), 2);
+    g_dataset.addVariable(var_name, fid1, path1.c_str());
 
-    NCVar *var = get_var(const_cast<char *>(var_name));
+    NCVar *var = g_dataset.findVariable(var_name);
     REQUIRE(var != nullptr);
     CHECK(var->is_virtual == false); // only one file so far
     CHECK(var->size[0] == 3);        // time
@@ -134,12 +136,13 @@ TEST_CASE("add_var_to_list: a variable spanning two files becomes virtual, "
     CHECK(n_vars_in_list(variables) == nvars_before + 1); // exactly one new NCVar
 
     int fid2 = open_for_core(path2);
-    add_var_to_list(const_cast<char *>(var_name), fid2, const_cast<char *>(path2.c_str()), 2);
+    g_dataset.addVariable(var_name, fid2, path2.c_str());
 
-    // Re-fetch: add_var_to_list() mutates the existing NCVar in place for a
-    // variable it already knows about, so `var` is still valid, but re-
-    // fetching documents that get_var() finds the same, not a new, node.
-    NCVar *var2 = get_var(const_cast<char *>(var_name));
+    // Re-fetch: Dataset::addVariable() mutates the existing NCVar in place
+    // for a variable it already knows about, so `var` is still valid, but
+    // re-fetching documents that findVariable() finds the same, not a new,
+    // node.
+    NCVar *var2 = g_dataset.findVariable(var_name);
     CHECK(var2 == var);
     CHECK(var->is_virtual == true);
     CHECK(var->size[0] == 5); // 3 + 2, accumulated across both files
@@ -160,7 +163,7 @@ TEST_CASE("add_var_to_list: a variable spanning two files becomes virtual, "
     CHECK(f1 == var->files.back().get());
 
     // var->dim[] is only ever populated from the FIRST file's
-    // fill_dim_structs() call (see util.cc:add_var_to_list()'s "already
+    // fill_dim_structs() call (see Dataset::addVariable()'s "already
     // exists" branch -- it never re-derives dim structs for later files),
     // but that branch keeps dim->size in sync with the same accumulation
     // it applies to var->size[0] (see the "kept in sync" comment there):
@@ -176,8 +179,12 @@ TEST_CASE("add_var_to_list: a variable spanning two files becomes virtual, "
     CHECK(var->dim[0]->size == 5);
     CHECK(var->dim[0]->timelike == 1); // handle_time_dim() recognized the udunits time axis
 
-    netcdf_fi_close(fid1);
-    netcdf_fi_close(fid2);
+    // Do NOT netcdf_fi_close(fid1/fid2) here: Dataset::addVariable() routes
+    // every fileid through trackFile() (OOP_redesign Step 5),
+    // which took ownership of both fds and will close them itself when the
+    // Dataset is destroyed (for the global g_dataset, at process exit) --
+    // closing them again here would be a double-close of an already-closed
+    // fileid.
     std::remove(path1.c_str());
     std::remove(path2.c_str());
 }

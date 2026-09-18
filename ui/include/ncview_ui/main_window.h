@@ -36,7 +36,10 @@
 // actively wrong here since in_timer_set() takes a std::function.
 #include "ncview/includes.h"
 #include "ncview/defines.h"
+#include "ncview/frame_renderer.h"
 #include "ncview/protos.h"
+
+class ViewerController;
 
 namespace ncview_ui {
 
@@ -105,6 +108,21 @@ private:
 	Transform transform_ = Transform::None;
 };
 
+// Payload for prev_btn/next_btn's callback (dimStepCallback): which dim,
+// which direction/modifier, and the controller to call -- carried
+// explicitly so the static callback never has to look one up by name.
+struct DimStepCbData {
+	std::string name;
+	Modifier modifier;
+	ViewerController *controller;
+};
+
+// Payload for value_slider's callback (dimSliderCallback): same reasoning.
+struct DimSliderCbData {
+	std::string name;
+	ViewerController *controller;
+};
+
 struct DimRow {
 	std::string name;
 	int         index        = 0;        // this row's position in dim_pack_ -- see MainWindow::recenterDimRow()
@@ -123,14 +141,25 @@ struct DimRow {
 	// Owns prev_btn/next_btn/value_slider's callback data (see
 	// rebuildDimRow()) so it's freed when this row is torn down in
 	// clearDimButtons(), instead of leaking on every rebuild.
-	std::unique_ptr<std::pair<std::string,Modifier>> prev_cb_data;
-	std::unique_ptr<std::pair<std::string,Modifier>> next_cb_data;
-	std::unique_ptr<std::string>                     slider_cb_data;
+	std::unique_ptr<DimStepCbData>   prev_cb_data;
+	std::unique_ptr<DimStepCbData>   next_cb_data;
+	std::unique_ptr<DimSliderCbData> slider_cb_data;
 };
 
 struct NamedColormap {
 	std::string name;
 	unsigned char r[256], g[256], b[256];
+};
+
+class MainWindow;
+
+// Payload for colormap_choice_'s per-item callback (colormapChoiceCallback):
+// which colormap index, and the MainWindow whose colormaps_/colormap
+// selection it applies to -- carried explicitly instead of the callback
+// reaching MainWindow::instance() by name.
+struct ColormapCbData {
+	size_t index;
+	MainWindow *window;
 };
 
 // Fl_Double_Window has no resize callback of its own; this just forwards
@@ -175,6 +204,12 @@ public:
 	void  createColorbar( float user_min, float user_max, Transform transform );
 	void  drawColorbar();
 	void  populateVarList();
+	// Phase 13c: shows/hides the 2-D image pane, driven by core's
+	// in_popup_2d_window()/in_popdown_2d_window() seam. Both were empty
+	// no-ops in this port, so selecting a 1-D variable left the previous
+	// variable's picture on screen and fully clickable -- see
+	// tests/test_view_1d_guards.cc for what that reached.
+	void  setImageVisible( bool visible );
 	void  setCursorBusy( bool busy );
 	void  pixelToRgb( ncv_pixel pix, int *r, int *g, int *b ) const;
 	void  queryPointerPosition( int *x, int *y ) const;
@@ -249,6 +284,14 @@ private:
 	Fl_Choice         *colormap_choice_ = nullptr; // last child of var_pack_; see rebuildColormapChoice()
 	Fl_Box            *labels_[16] = {};          // indexed by LABEL_*
 	Fl_Widget         *buttons_[32] = {};          // indexed by BUTTON_*
+	// Phase 13c: the sensitivity core last asked for, per Button id, so it
+	// survives rebuildButtonBar() -- which clear()s button_bar_ and builds
+	// brand-new (and therefore active) Fl_Buttons on every relayout. Without
+	// this, every set_buttons() state core applies is silently thrown away
+	// the next time the window is laid out, BUTTONS_ALL_OFF included.
+	// Stored inverted so that the zero-initialized default means
+	// "sensitive", which is what a freshly built Fl_Button already is.
+	bool               button_insensitive_[32] = {};
 	// Parallel to buttons_[], for the actions moved into menu_bar_ instead
 	// of staying toolbar buttons (see setSensitive(), which activates/
 	// deactivates whichever of the two a given Button id actually has).
@@ -260,6 +303,20 @@ private:
 	Fl_Box            *info_row_boxes_[4] = {};
 
 	std::vector<DimRow> dim_rows_;
+	// Phase 12c: was set2DSize()'s own function-local `static size_t
+	// last_w, last_h` -- the same leaked-comparison-state anti-pattern
+	// Phase 11h fixed on the core side (ViewerController::draw()'s
+	// last_x_size/last_y_size, moved onto ViewerSession::lastFrameSize()).
+	// A real instance member here is no broader a change than that: this
+	// class is already a process-lifetime singleton (see instance() in
+	// interface_fltk.cc), so there's no reset semantics being introduced
+	// or removed, just no longer hiding per-process state behind `static`
+	// inside a method body where it looks instance-scoped but isn't.
+	size_t last_2d_width_ = 0, last_2d_height_ = 0;
+	// Phase 12c: was setOptionsDialog()'s own function-local `static
+	// std::string custom_overlay_filename` -- same category as the two
+	// above, moved here for the same reason.
+	std::string custom_overlay_filename_;
 	std::vector<NamedColormap> colormaps_;
 	// One preview swatch image per colormaps_ entry, in the same order --
 	// built once in createColormap() and reused across every
@@ -268,6 +325,10 @@ private:
 	// Owned for the life of this singleton, like the dim-row callback
 	// closures below -- never explicitly freed.
 	std::vector<Fl_RGB_Image*> colormap_previews_;
+	// One per colormaps_ entry, built once alongside it in createColormap()
+	// and reused across every rebuildColormapChoice() call -- same lifetime
+	// as colormap_previews_ above.
+	std::vector<std::unique_ptr<ColormapCbData>> colormap_cb_data_;
 	int current_colormap_ = -1;
 };
 

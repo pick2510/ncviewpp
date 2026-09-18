@@ -1,7 +1,7 @@
 /*
  * Ncview by David W. Pierce.  A visual netCDF file viewer.
- * Copyright (C) 2026 Dominik Strebel
  * Copyright (C) 1993 through 2024 David W. Pierce
+ * Modifications Copyright (C) 2026 Dominik Strebel
  *
  * This program  is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 3 as 
@@ -43,10 +43,21 @@ int 	netcdf_get_att_util( int id, int varid, const char *var_name, const char *a
 int 	nc_inq_varid_grp( int ncid, char *varname, int *varid, int *groupid );
 char 	*ncview_groupname( int gid );
 char 	*ncview_varname( int gid, int varid );
-void 	nc_print_group_structure( int fileid );
 int 	nc_root_id_from_group_id( int gid );
 
 const char *nc_type_to_string( nc_type type );
+
+/* These three used to be declared in protos.h with external linkage but,
+ * per Phase 6 of the "refine the architecture" plan, were confirmed to
+ * have zero callers anywhere outside this translation unit (the earlier
+ * "zero callers project-wide" survey that flagged them was read as
+ * "unused" but they are each called from within this same file --
+ * verified directly rather than deleted on the strength of that survey).
+ * Declared static here, matching this file's other internal-only
+ * helpers above. */
+static char *netcdf_varindex_to_name( int cdfid, int index );
+static std::string netcdf_global_att_string( int fileid );
+static int netcdf_dimvar_bounds_id( int fileid, char *dim_name, int *nvertices );
 
 /*******************************************************************************************/
 void safe_strcat( char *dest, size_t dest_len, const char *src )
@@ -75,19 +86,6 @@ int netcdf_fi_confirm( char *name )
 
 	ierr = nc_close( fd );
 	return ( true );
-}
-
-/*******************************************************************************************/
-int netcdf_fi_writable( char *name )
-{
-	int	fd, ierr;
-
-	ierr = nc_open( name, NC_WRITE, &fd );
-	if( ierr != NC_NOERR )
-		return( false );
-
-	nc_close( fd );
-	return( true );
 }
 
 /*******************************************************************************************/
@@ -210,8 +208,29 @@ void netcdf_fi_list_vars_inner( Stringlist **ret_val, int gid, char *groupname )
 				if( *(size+jj) > 1 ) 
 					eff_ndims++;
 				}
-			dimlist  = fi_scannable_dims( gid, var_name );
-			if( (total_size > 1L) && (stringlist_len( dimlist ) >= 1)) {
+			/* netcdf_scannable_dims(), not fi_scannable_dims(): this file
+			 * IS the netCDF backend fi_scannable_dims() would dispatch to,
+			 * so calling back through file.cc's dispatch layer here was a
+			 * circular dependency with no purpose (Phase 6, "refine the
+			 * architecture" plan) -- broken by calling the primitive
+			 * directly, as every other call in this file already does. */
+			dimlist  = netcdf_scannable_dims( gid, var_name );
+			/* Phase 12j: exclude non-numeric variables from the
+			 * displayable list -- nc_get_vara_float() (this function's
+			 * eventual data-read primitive, in netcdf_fi_get_data())
+			 * cannot read NC_CHAR/NC_STRING or any netCDF-4 user-defined
+			 * type (NC_VLEN/NC_OPAQUE/NC_ENUM/NC_COMPOUND, all with
+			 * nc_type >= NC_FIRSTUSERTYPEID). The loop variable i IS the
+			 * netCDF varid within group gid (varids are 0..n_vars-1 per
+			 * group), so this costs one cheap call with no re-resolution.
+			 * If the type lookup itself fails, treat as non-displayable
+			 * rather than risk offering something we can't read. */
+			nc_type vtype;
+			int	vtype_err = nc_inq_vartype( gid, i, &vtype );
+			int	is_numeric_type = (vtype_err == NC_NOERR) &&
+				(vtype != NC_CHAR) && (vtype != NC_STRING) &&
+				(vtype < NC_FIRSTUSERTYPEID);
+			if( is_numeric_type && (total_size > 1L) && (stringlist_len( dimlist ) >= 1)) {
 				/* Hack to make version 1.70+ emulate older versions
 				 * that did not display 1-d vars.
 				 */
@@ -465,7 +484,9 @@ std::string netcdf_dim_id_to_name( int fileid, std::string_view var_name, int di
 	*/
 
 
-	n_dims = fi_n_dims( gid, var_name_ng );
+	/* netcdf_fi_n_dims(), not fi_n_dims(): breaking the same circular
+	 * call-back into file.cc's dispatch layer as above (Phase 6). */
+	n_dims = netcdf_fi_n_dims( gid, var_name_ng );
 	std::vector<int> dim( n_dims );
 	err    = nc_inq_var( gid, netcdf_var_id, var_name_ng, &var_type,
 				&n_dims, dim.data(), &n_atts );
@@ -536,9 +557,16 @@ int netcdf_dim_name_to_id( int fileid, char *var_name, char *dim_name )
 
 	err = nc_inq_varid_grp( fileid, var_name, &netcdf_var_id, &gid );
 	if( err != NC_NOERR ) {
+		/* Phase 12e: was exit(-1) -- every caller of this function's
+		 * wrapper chain (NetCDFFile::dimNameToId()) now checks for -1
+		 * before indexing anything with the result (see view.cc's
+		 * View::setAxis()/showCurrentDimValues() and
+		 * viewer_controller.cc's changeCurDim()/setCurDimIndex()), so
+		 * returning -1 here instead of exiting is safe. */
 		fprintf( stderr, "Error in netcdf_dim_name_to_id: could not find var named \"%s\" in file!\n",
 			var_name );
-		exit(-1);
+		in_error( "The requested variable was not found in this file." );
+		return(-1);
 		}
 	if( debug == 1 ) {
 		printf( "netcdf_dim_name_to_id: nc_inq_varid_grp reported that var >%s< of gid=%d (%s)",
@@ -562,15 +590,20 @@ int netcdf_dim_name_to_id( int fileid, char *var_name, char *dim_name )
 	if( netcdf_dim_id == -1 )
 		return( -1 );
 
-	n_dims = fi_n_dims( gid, var_name_ng );
+	/* netcdf_fi_n_dims(), not fi_n_dims(): breaking the same circular
+	 * call-back into file.cc's dispatch layer as above (Phase 6). */
+	n_dims = netcdf_fi_n_dims( gid, var_name_ng );
 	std::vector<int> dim( n_dims );
 	err    = nc_inq_var( gid, netcdf_var_id, var_name_ng, &var_type,
 				&n_dims, dim.data(), &n_atts );
 	if( err != NC_NOERR ) {
+		/* Phase 12e: was exit(-1) -- see the identical reasoning above,
+		 * at this function's other exit() site. */
 		fprintf( stderr, "ncview: netcdf_dim_name_to_id: error on ");
 		fprintf( stderr, "nc_inq_var call.  Variable %s, Dimension %s\n",
 					var_name, dim_name );
-		exit( -1 );
+		in_error( "Failed to query dimension information for this variable." );
+		return(-1);
 		}
 
 	for( i=0; i<n_dims; i++ )
@@ -598,9 +631,21 @@ void netcdf_fi_get_data( int fileid, char *var_name, size_t *start_pos,
 
 	err = nc_inq_varid_grp( fileid, var_name, &varid, &gid );
 	if( err != NC_NOERR ) {
+		/* Phase 12j: degrade rather than abort. Unlike the read-failure
+		 * branch below, tot_size can't safely be computed here -- n_dims
+		 * is only knowable via a successful lookup of this same variable,
+		 * and every helper that could supply it (netcdf_fi_n_dims(),
+		 * etc.) would re-run the identical failing lookup and exit()
+		 * itself, undoing the point of this fix. This lookup failing at
+		 * all is effectively unreachable in practice (every caller sizes
+		 * start_pos/count from a variable already resolved once at
+		 * addVariable() time), so simply reporting and returning without
+		 * touching data -- rather than guessing at a fill extent -- is
+		 * the honest choice: the caller's buffer is left exactly as it
+		 * was on entry. */
 		fprintf( stderr, "Error in netcdf_fi_get_data: could not find var named \"%s\" in file!\n",
 			var_name );
-		exit(-1);
+		return;
 		}
 
 	varname_no_groups( var_name, var_name_ng, NULL );
@@ -624,6 +669,18 @@ void netcdf_fi_get_data( int fileid, char *var_name, size_t *start_pos,
 
 	err = nc_get_vara_float( gid, varid, start_pos, count, data );
 	if( err != NC_NOERR ) {
+		/* Phase 12j: degrade rather than abort -- this is the single
+		 * most reachable exit() site in this file (any displayable
+		 * variable that fails a data read, e.g. a non-numeric type that
+		 * slipped past netcdf_fi_list_vars_inner()'s type filter via a
+		 * coordinates attribute rather than the displayable-variable
+		 * list). tot_size is already known at this point, so fill the
+		 * whole buffer with FILL_FLOAT (this function's own "bad value"
+		 * sentinel, already used a few lines below for NaN results from
+		 * a *successful* read) and return immediately -- critically,
+		 * before the NaN-elimination loop and the scale_factor/add_offset
+		 * block below, so the sentinel isn't multiplied into something
+		 * else. */
 		fprintf( stderr, "netcdf_fi_get_data: error on nc_get_vara_float call\n" );
 		fprintf( stderr, "cdfid=%d   variable=%s\n", fileid, var_name );
 		fprintf( stderr, "start, count:\n" );
@@ -631,7 +688,9 @@ void netcdf_fi_get_data( int fileid, char *var_name, size_t *start_pos,
 			fprintf( stderr, "[%zu]: %zu  %zu\n",
 				i, *(start_pos+i), *(count+i) );
 		fprintf( stderr, "%s\n", nc_strerror(err) );
-		exit( -1 );
+		for( i=0L; i<tot_size; i++ )
+			data[i] = FILL_FLOAT;
+		return;
 		}
 
 	/* Eliminate nans */
@@ -853,37 +912,9 @@ int netcdf_n_dims( int cdfid, char *varname )
 }
 
 /*******************************************************************************************/
-/* What type of variable is this? 
+/* Given the variable INDEX, what is the variable's name?
 */
-int netcdf_vartype( int cdfid, char *varname )
-{
-	int	varid, err, n_dims;
-	char 	var_name[MAX_NC_NAME];	
-	nc_type	var_type;
-	int	n_atts, dim[MAX_VAR_DIMS];
-
-	err = nc_inq_varid( cdfid, varname, &varid );
-	if( err != NC_NOERR ) {
-		fprintf( stderr, "Error in netcdf_vartype: could not find var named \"%s\" in file!\n",
-			varname );
-		exit(-1);
-		}
-
-	err = nc_inq_var( cdfid, varid, var_name, &var_type, &n_dims, dim, &n_atts );
-	if( err != NC_NOERR ) {
-		fprintf( stderr, "netcdf_n_dims: error calling nc_inq_var for cdfid=%d, ", 
-					cdfid);
-		fprintf( stderr, "varname=%s\n", varname );
-		exit( -1 );
-		}
-
-	return( var_type );
-}
-
-/*******************************************************************************************/
-/* Given the variable INDEX, what is the variable's name? 
-*/
-char *netcdf_varindex_to_name( int cdfid, int index )
+static char *netcdf_varindex_to_name( int cdfid, int index )
 {
 	char	*var_name;
 	int	err;
@@ -1139,10 +1170,21 @@ int netcdf_dimvar_id( int fileid, char *dim_name, int *dimvar_gid )
 			err = nc_inq_grp_ncid( nc_root_id_from_group_id(fileid), groupname, &gid );
 
 		if( err != NC_NOERR ) {
+			/* Phase 12i: this fires on any ordinary netCDF-4 file with
+			 * a variable nested >=2 groups deep -- varname_no_groups()
+			 * splits a fully-qualified dim name at the LAST slash, so
+			 * a variable at grp1/grp2/x hands nc_inq_grp_ncid() the
+			 * two-level path "grp1/grp2", which it can't resolve
+			 * (nc_inq_grp_ncid() only accepts a simple, one-level
+			 * group name -- nc_inq_grp_full_ncid() is the path-taking
+			 * variant). Degrade like every other "no dimvar" path in
+			 * this function rather than aborting: every caller
+			 * already treats a negative return as "no associated
+			 * dimvar" and falls back to the bare dim name/id. */
 			fprintf( stderr, "%s line %d : Error: nc_inq_grp_ncid failed in routine netcdf_dimvar_id:\n",
 				__FILE__, __LINE__ );
 			fprintf( stderr, "%s\n", nc_strerror( err ) );
-			exit(-1);
+			return( -1 );
 			}
 
 		/* Found a group ID to use instead of the passed fileid */
@@ -1225,12 +1267,22 @@ int netcdf_has_dim_values( int fileid, char *dim_name )
  * be filled out.  If the return value of the call is NC_CHAR, then ret_val_char
  * will have been filled out.  If the return value of the call is NC_DOUBLE, then
  * ret_val_double will have been filled out.
+ *
+ * Phase 12h: this function always returns NC_DOUBLE or NC_CHAR and never
+ * aborts the process. When it cannot read or make sense of the requested
+ * dimension value (an unusable file shape, a failed netCDF read, an
+ * oversized bounds variable, ...) it degrades: it warns to stderr and
+ * falls back to virt_place as a synthetic NC_DOUBLE coordinate (or, for
+ * an unusable bounds variable specifically, to the plain unbounded
+ * coordinate read with *return_has_bounds set to 0), the same "index as
+ * coordinate" presentation ncview already uses for any dimension with no
+ * coordinate variable at all.
  */
 nc_type netcdf_dim_value( int fileid, char *dim_name, size_t place, 
 		double *ret_val_double, char *ret_val_char, size_t virt_place, 
 		int *return_has_bounds, double *return_bounds_min, double *return_bounds_max )
 {
-	int	err, dimvar_id, nvertices, dimvar_gid;
+	int	err, dimvar_id, nvertices, dimvar_gid, use_bounds;
 	char	var_name[MAX_NC_NAME];
 	nc_type type, ret_type;
 	size_t	limit;
@@ -1258,9 +1310,31 @@ nc_type netcdf_dim_value( int fileid, char *dim_name, size_t place,
 
 	err = nc_inq_var( dimvar_gid, dimvar_id, var_name, &type, &n_dims, dim, &n_atts );
 	if( err != NC_NOERR ) {
-		fprintf( stderr, "netcdf_dim_value: failed on nc_inq_var call!\n" );
-		exit(-1);
+		/* Phase 12h: dimvar_id/dimvar_gid were just handed back by a
+		 * successful lookup two lines above, so this is effectively
+		 * unreachable outside a corrupt handle or a netCDF-library-
+		 * internal failure. Degrade anyway rather than abort, matching
+		 * the rest of this function -- this runs before the
+		 * has_bounds/bounds_min/bounds_max pre-zeroing block below, so
+		 * it must set all four out-params itself, the same shape the
+		 * two early returns above it use. */
+		fprintf( stderr, "netcdf_dim_value: failed on nc_inq_var call for dim %s; using virtual place\n",
+			dim_name );
+		*ret_val_double = (double)virt_place;
+		*return_has_bounds = 0;
+		*return_bounds_min = 0.0;
+		*return_bounds_max = 0.0;
+		return( NC_DOUBLE );
 		}
+
+	/* Phase 12f: initialize on every path below, including the
+	 * default (unhandled-datatype) and NC_CHAR cases, which never
+	 * used to write these -- callers that check *return_has_bounds
+	 * were reading uninitialized stack memory on those paths. */
+	*return_has_bounds = 0;
+	*return_bounds_min = 0.0;
+	*return_bounds_max = 0.0;
+
 	switch( type ) {
 		case NC_CHAR:
 			/* this one is really complicated because the netCDF standard
@@ -1282,29 +1356,78 @@ nc_type netcdf_dim_value( int fileid, char *dim_name, size_t place,
 				char_place[0] = place;
 				do	{
 					char_place[1] = i;
-					err = nc_get_var1_uchar( dimvar_gid, dimvar_id, char_place, (((unsigned char *)(ret_val_char))+i));
+					/* Phase 12g: nc_get_var1_uchar() cannot read
+					 * NC_CHAR data at all -- confirmed empirically,
+					 * it fails every time with NC_ECHAR ("Attempt to
+					 * convert between text & numbers"), in both
+					 * classic and netCDF-4 files. Before Phase 12f
+					 * checked this call's error code, that failure
+					 * was silently ignored and this buffer was left
+					 * whatever it started as; Phase 12f's new check
+					 * turned that into a hard exit() on every single
+					 * 2-D NC_CHAR dimvar read, not just a rare one.
+					 * nc_get_var1_text() is the function that
+					 * actually reads NC_CHAR data. */
+					err = nc_get_var1_text( dimvar_gid, dimvar_id, char_place, ret_val_char+i );
+					if( err != NC_NOERR ) {
+						/* Phase 12h: degrade rather than abort -- break
+						 * out of the read loop and fall back to
+						 * virt_place, overwriting the NC_CHAR assigned
+						 * above. ret_val_char is only NUL-terminated
+						 * below when ret_type is still NC_CHAR, so an
+						 * error on the very first character (i==0,
+						 * where i-1 would underflow) is handled safely. */
+						fprintf( stderr, "netcdf_dim_value: failed reading character %ld of dim %s; using virtual place\n",
+							i, dim_name );
+						fprintf( stderr, "%s\n", nc_strerror( err ) );
+						*ret_val_double = (double)virt_place;
+						ret_type = NC_DOUBLE;
+						break;
+						}
 					i++;
 					}
 				while
 					(((size_t)i < limit) &&
 						(*(ret_val_char+i-1) != '\0'));
-				if( *(ret_val_char+i-1) != '\0')
+				if( (ret_type == NC_CHAR) && (*(ret_val_char+i-1) != '\0') )
 					*(ret_val_char+i-1) = '\0';
 				}
-			else	{
+			else if( n_dims == 1 ) {
 				/* 1-D NC_CHAR coordinate variable: one character
 				 * per coordinate position, no second dimension to
-				 * index over. The n_dims==2 path's index array
-				 * ({place, i}) is meaningless here -- nc_get_var1
-				 * only consults the first n_dims (1) of it, so
-				 * every "i" iteration re-read the same single
-				 * value at position "place", producing that one
-				 * character repeated rather than the intended
-				 * (single-character) string. */
+				 * index over. */
 				size_t place1[1];
 				place1[0] = place;
-				err = nc_get_var1_uchar( dimvar_gid, dimvar_id, place1, (unsigned char *)ret_val_char );
-				ret_val_char[1] = '\0';
+				/* Phase 12g: see the n_dims==2 case's comment above --
+				 * nc_get_var1_uchar() cannot read NC_CHAR data. */
+				err = nc_get_var1_text( dimvar_gid, dimvar_id, place1, ret_val_char );
+				if( err != NC_NOERR ) {
+					/* Phase 12h: degrade rather than abort. */
+					fprintf( stderr, "netcdf_dim_value: failed reading dim %s at place %zu; using virtual place\n",
+						dim_name, place );
+					fprintf( stderr, "%s\n", nc_strerror( err ) );
+					*ret_val_double = (double)virt_place;
+					ret_type = NC_DOUBLE;
+					}
+				else
+					ret_val_char[1] = '\0';
+				}
+			else	{
+				/* Phase 12g: neither of the two shapes this function
+				 * knows how to handle -- reading via either fixed-size
+				 * index array (place1[1] or char_place[2]) below a
+				 * higher-rank NC_CHAR dimvar would read past the end
+				 * of that array. netcdf_dimvar_id() matches purely by
+				 * name, so this is reachable on an ordinary file (a
+				 * scalar or higher-rank variable whose name happens to
+				 * collide with a dimension name), not just a corrupt
+				 * one -- degrade like the default: case below rather
+				 * than aborting the whole process over it.
+				 */
+				fprintf( stderr, "ncview: netcdf_dim_value: unsupported rank (%d) for character dimension variable %s; using virtual place\n",
+					n_dims, dim_name );
+				*ret_val_double = (double)virt_place;
+				ret_type = NC_DOUBLE;
 				}
 			break;
 
@@ -1319,64 +1442,110 @@ nc_type netcdf_dim_value( int fileid, char *dim_name, size_t place,
 			 * centered between the boundaries.  Some files have the dim value NOT
 			 * centered between the boundaries, which isn't so useful.
 			 */
-			dimvar_bounds_id = netcdf_dimvar_bounds_id( dimvar_gid, dim_name, &nvertices );
-			if( dimvar_bounds_id < 0 ) { 
-
-				*return_has_bounds = 0;
-				err = nc_get_var1_double( dimvar_gid, dimvar_id, &place, ret_val_double );
-#ifdef ELIM_DENORMS
-				/* Eliminate denormalized numbers */
-				c = (unsigned char *)ret_val_double;
-				if((*(c+7)==0) && ((*(c+0)!=0)||(*(c+1)!=0)||(*(c+2)!=0)||(*(c+3)!=0)||(*(c+4)!=0)||(*(c+5)!=0)||(*(c+6)!=0))) {
-					fprintf( stderr,
-					  "Denormalized number in dimvar %s, position %ld: Setting to zero!\n",
-					  var_name, place );
-					*ret_val_double = 0.0;
-					}
-#endif
-				}
-			else
-				{
-				*return_has_bounds = nvertices;
-				/* OK, have a bounds dimvar here, read it and compute mean
-				 * to get the value to return.
+			if( n_dims != 1 ) {
+				/* Phase 12g: a numeric dimvar is expected to be
+				 * 1-D. &place below is a single size_t used as the
+				 * index array for nc_get_var1_double() -- if the
+				 * dimvar were actually higher rank, the netCDF
+				 * library would read past the end of it.
+				 * netcdf_dimvar_id() matches purely by name, so this
+				 * is reachable on an ordinary file (e.g. a 2-D
+				 * curvilinear coordinate variable whose name happens
+				 * to collide with a dimension name), not just a
+				 * corrupt one -- degrade like the default: case below
+				 * rather than aborting the whole process over it.
 				 */
-				if( nvertices > 50 ) {
-					fprintf( stderr, "Error, compiled with max number of vertices for bounds var of 50!  But found a var with n=%d\n", 
-						nvertices );
-					exit(-1);
-					}
+				fprintf( stderr, "ncview: netcdf_dim_value: unsupported rank (%d) for numeric dimension variable %s; using virtual place\n",
+					n_dims, dim_name );
+				*ret_val_double = (double)virt_place;
+				ret_type = NC_DOUBLE;
+				break;
+				}
+
+			dimvar_bounds_id = netcdf_dimvar_bounds_id( dimvar_gid, dim_name, &nvertices );
+			/* Phase 12h: "usable bounds" now covers both "no bounds
+			 * attribute at all" and "bounds attribute present but this
+			 * function can't handle it (too many vertices)" -- both
+			 * converge on the same plain, bounds-less coordinate read
+			 * below rather than each having their own copy of it. */
+			use_bounds = (dimvar_bounds_id >= 0) && (nvertices <= 50);
+
+			if( use_bounds ) {
+				*return_has_bounds = nvertices;
+				/* OK, have a usable bounds dimvar here, read it and
+				 * compute the mean to get the value to return.
+				 */
 				bstart[0] = place;
 				bstart[1] = 0L;
 				bcount[0] = 1L;
 				bcount[1] = nvertices;
 				err = nc_get_vara_double( dimvar_gid, dimvar_bounds_id, bstart, bcount, boundvals );
-				if( err != NC_NOERR ) {	
-					fprintf( stderr, "Error reading boundary dim values from file!\n" );
+				if( err != NC_NOERR ) {
+					/* Phase 12h: degrade to the plain, bounds-less read
+					 * below rather than aborting -- the coordinate
+					 * variable itself is fine, only its bounds
+					 * variable's read failed. */
+					fprintf( stderr, "Error reading boundary dim values for dim %s from file; using unbounded coordinate instead\n",
+						dim_name );
 					fprintf( stderr, "%s\n", nc_strerror( err ) );
-					exit(-1);
+					use_bounds = 0;
+					*return_has_bounds = 0;
 					}
-				*ret_val_double = 0.0;
-				boundvals_min = 1.e35;
-				boundvals_max = -1.e35;
-				for( i=0; i<nvertices; i++ ) {
+				else	{
+					*ret_val_double = 0.0;
+					boundvals_min = 1.e35;
+					boundvals_max = -1.e35;
+					for( i=0; i<nvertices; i++ ) {
 #ifdef ELIM_DENORMS
+						/* Eliminate denormalized numbers */
+						c = (unsigned char *)boundvals[i];
+						if((*(c+7)==0) && ((*(c+0)!=0)||(*(c+1)!=0)||(*(c+2)!=0)||(*(c+3)!=0)||(*(c+4)!=0)||(*(c+5)!=0)||(*(c+6)!=0))) {
+							fprintf( stderr,
+							  "Denormalized number in dimvar %s, position %ld: Setting to zero!\n",
+							  var_name, place );
+							boundvals[i] = 0.0;
+							}
+#endif
+						*ret_val_double += boundvals[i];
+						boundvals_min = (boundvals[i] < boundvals_min) ? boundvals[i] : boundvals_min;
+						boundvals_max = (boundvals[i] > boundvals_max) ? boundvals[i] : boundvals_max;
+						}
+					*ret_val_double /= (double)nvertices;
+					*return_bounds_min = boundvals_min;
+					*return_bounds_max = boundvals_max;
+					}
+				}
+
+			if( !use_bounds ) {
+				/* Phase 12h: was `else`, i.e. dimvar_bounds_id < 0 --
+				 * now also reached when a bounds variable exists but
+				 * couldn't be used (too many vertices, or its own read
+				 * failed above). Plain, bounds-less coordinate read. */
+				if( (dimvar_bounds_id >= 0) && (nvertices > 50) )
+					fprintf( stderr, "Error, compiled with max number of vertices for bounds var of 50!  But found a var with n=%d for dim %s; using unbounded coordinate instead\n",
+						nvertices, dim_name );
+
+				*return_has_bounds = 0;
+				err = nc_get_var1_double( dimvar_gid, dimvar_id, &place, ret_val_double );
+				if( err != NC_NOERR ) {
+					/* Phase 12h: degrade rather than abort. */
+					fprintf( stderr, "netcdf_dim_value: failed reading dim %s at place %zu; using virtual place\n",
+						dim_name, place );
+					fprintf( stderr, "%s\n", nc_strerror( err ) );
+					*ret_val_double = (double)virt_place;
+					}
+#ifdef ELIM_DENORMS
+				else	{
 					/* Eliminate denormalized numbers */
-					c = (unsigned char *)boundvals[i];
+					c = (unsigned char *)ret_val_double;
 					if((*(c+7)==0) && ((*(c+0)!=0)||(*(c+1)!=0)||(*(c+2)!=0)||(*(c+3)!=0)||(*(c+4)!=0)||(*(c+5)!=0)||(*(c+6)!=0))) {
 						fprintf( stderr,
 						  "Denormalized number in dimvar %s, position %ld: Setting to zero!\n",
 						  var_name, place );
-						boundvals[i] = 0.0;
+						*ret_val_double = 0.0;
 						}
-#endif
-					*ret_val_double += boundvals[i];
-					boundvals_min = (boundvals[i] < boundvals_min) ? boundvals[i] : boundvals_min;
-					boundvals_max = (boundvals[i] > boundvals_max) ? boundvals[i] : boundvals_max;
 					}
-				*ret_val_double /= (double)nvertices;
-				*return_bounds_min = boundvals_min;
-				*return_bounds_max = boundvals_max;
+#endif
 				}
 			ret_type = NC_DOUBLE;
 			break;
@@ -1436,8 +1605,9 @@ void netcdf_fill_aux_data( int id, char *var_name, FDBlist *fdb )
 			{
 			/* Get the units for the dimvar. Empty means "no units
 			 * attribute" -- callers now test fdb->recdim_units.empty()
-			 * rather than comparing to NULL (see file.cc's
-			 * fi_dim_value_convert()). */
+			 * rather than comparing to NULL (see dataset.cc's
+			 * dimValueConvert(), formerly file.cc's fi_dim_value_convert()
+			 * before Phase 6 moved it). */
 			fdb->recdim_units = netcdf_var_units( gid, unlimdim_name );
 			}
 		}
@@ -1451,7 +1621,20 @@ void netcdf_fill_aux_data( int id, char *var_name, FDBlist *fdb )
 	if( n_atts == 0 )
 		return;
 
-	netcdf->valid_range_set = 
+	/* netcdf was fetched from fdb->aux_data.get() above, before the
+	 * recdim_units work -- that's independent of it and still runs
+	 * regardless. Every real caller (Dataset::addVariable(), via
+	 * new_fdblist()) pre-allocates aux_data before reaching here, but
+	 * nothing enforced that invariant in this function: Phase 5a found
+	 * this via a real SIGSEGV while constructing a bare FDBlist without
+	 * it (see tests/test_file_layer.cc), pinned it rather than fixing it
+	 * (5a was tests-only), and flagged it for Phase 6. Guarding here,
+	 * rather than dereferencing blindly, matches this file's existing
+	 * style of checking preconditions instead of assuming them. */
+	if( netcdf == NULL )
+		return;
+
+	netcdf->valid_range_set =
 	    netcdf_get_att_util( gid, varid, var_name_ng, "valid_range",  2, netcdf->valid_range );
 	netcdf->valid_min_set = 
 	    netcdf_get_att_util( gid, varid, var_name_ng, "valid_min",    1, &(netcdf->valid_min) );
@@ -1767,7 +1950,7 @@ void netcdf_fill_value( int file_id, char *var_name, float *v, NetCDFOptions *au
 	if( foundit ) {
 		/* Implement the "add_offset" and "scale_factor" attributes.
 		 * aux_data is NULL for coordinate-variable reads (util.cc's
-		 * fill_dim_structs()/cache_scalar_coord_info() both pass NULL
+		 * fill_dim_structs()/Dataset::cacheScalarCoordInfo() both pass NULL
 		 * here), which have no scale/offset attributes to apply. */
 		if( aux_data != NULL && aux_data->add_offset_set && aux_data->scale_factor_set )
 			*v = *v * aux_data->scale_factor
@@ -1789,8 +1972,16 @@ void netcdf_fill_value( int file_id, char *var_name, float *v, NetCDFOptions *au
 
 	/* default behavior, if no specified "_FillValue" attribute.
 	 * Thanks to Heiko Klein <Heiko.Klein@met.no> for the suggestion & code.
+	 *
+	 * Phase 12j: this used to pass file_id (the root id) here instead of
+	 * gid, the group id nc_inq_varid_grp() resolved varid against a few
+	 * lines up -- the same wrong-id bug class Phase 12i fixed in
+	 * netcdf_att_string(). For a grouped variable this either resolves
+	 * the wrong variable's type or fails outright, and on failure *v is
+	 * left untouched -- reaching cacheScalarCoordInfo() and this
+	 * function's own caller as an uninitialized stack float.
 	*/
-	if ( nc_inq_vartype( file_id, varid, &vartype) == NC_NOERR ) {
+	if ( nc_inq_vartype( gid, varid, &vartype) == NC_NOERR ) {
 		switch (vartype) {
 			case NC_BYTE:   *v = (float) NC_FILL_BYTE; break;
 			case NC_SHORT:  *v = (float) NC_FILL_SHORT; break;
@@ -1904,7 +2095,7 @@ const char *nc_type_to_string( nc_type type )
 /*******************************************************************************************/
 std::string netcdf_att_string( int fileid, std::string_view var_name )
 {
-	int	iatt, varid, size_to_use, n_dims,
+	int	iatt, varid, groupid, size_to_use, n_dims,
 		dim[50], n_atts, err;
 	size_t	i;
 	nc_type	datatype, type;
@@ -1922,27 +2113,43 @@ std::string netcdf_att_string( int fileid, std::string_view var_name )
 	snprintf( ret_string.data(), retval_len, "Attributes for variable %s:\n------------------------------\n", var_name_s.c_str() );
 	ret_string[retval_len-1] = '\0';
 
-	err = nc_inq_varid( fileid, var_name_s.data(), &varid );
+	/* Phase 12i: this used to look the variable up with a plain
+	 * nc_inq_varid(), which only ever searches the root group -- every
+	 * other function in this file uses the group-aware
+	 * nc_inq_varid_grp() (see e.g. netcdf_fi_n_dims() above) because
+	 * caller-supplied variable names are always fully group-qualified
+	 * (netcdf_fi_list_vars_inner() prefixes them). So "Info" on any
+	 * variable inside any group crashed the process; this was a real
+	 * correctness bug, not just a missing safety check, since the plain
+	 * lookup could never have found the variable in the first place.
+	 * groupid (not fileid) is used for every subsequent call below,
+	 * matching that same established pattern. */
+	err = nc_inq_varid_grp( fileid, var_name_s.data(), &varid, &groupid );
 	if( err != NC_NOERR ) {
 		fprintf( stderr, "Error in netcdf_att_string: could not find var named \"%s\" in file!\n",
 			var_name_s.c_str() );
 		exit(-1);
 		}
 
-	err = nc_inq_var( fileid, varid, dummy_var_name, &type, &n_dims, dim, &n_atts );
+	err = nc_inq_var( groupid, varid, dummy_var_name, &type, &n_dims, dim, &n_atts );
 	if( err != NC_NOERR ) {
 		fprintf( stderr, "netcdf_att_string: failed on nc_inq_var call!\n" );
 		exit(-1);
 		}
 
+	/* Phase 12d: reported once per call, not once per unhandled attribute,
+	 * so a file with several modern-typed attributes doesn't pop up a
+	 * dialog per attribute. */
+	bool warned_unhandled_type = false;
+
 	for( iatt=0; iatt<n_atts; iatt++ ) {
 
-		err = nc_inq_attname( fileid, varid, iatt, att_name );
+		err = nc_inq_attname( groupid, varid, iatt, att_name );
 		if( err != NC_NOERR ) {
 			fprintf( stderr, "netcdf_att_string: failed on nc_inq_attname call!\n" );
 			exit(-1);
 			}
-		err = nc_inq_att(  fileid, varid, att_name, &datatype, &len );
+		err = nc_inq_att(  groupid, varid, att_name, &datatype, &len );
 		if( err != NC_NOERR ) {
 			fprintf( stderr, "netcdf_att_string: failed on nc_inq_att call!\n" );
 			exit(-1);
@@ -1957,13 +2164,35 @@ std::string netcdf_att_string( int fileid, std::string_view var_name )
 			case NC_DOUBLE: size_to_use = sizeof(double); break;
 			case NC_NAT:    fprintf( stderr, "Error, can't handle attribute of type NC_NAT, ignoring\n" ); size_to_use = sizeof(double); break;
 			default:
+				{
+				/* Phase 12d: was exit(-1) here -- every netCDF-4 type added
+				 * since this switch was written in 1993 (NC_UINT, NC_INT64,
+				 * NC_STRING, any user-defined/compound type) fell into this
+				 * branch, so a perfectly valid netCDF-4 file with a
+				 * modern-typed attribute crashed ncview the instant its
+				 * value was displayed. Skip just this one attribute (note
+				 * it in the returned text) and keep processing the rest,
+				 * the same "degrade, don't abort" shape NC_NAT already
+				 * uses one case above -- an unhandled type on one
+				 * attribute shouldn't blank the whole variable-info
+				 * display. */
+				char note[512];
+				snprintf( note, sizeof(note),
+					"(attribute \"%s\": unhandled netCDF datatype %d, skipped)\n",
+					att_name, (int)datatype );
 				fprintf( stderr, "Error, unhandled netcdf data type: %d\n", datatype );
-				exit(-1);
+				if( ! warned_unhandled_type ) {
+					in_error( "This file has one or more attributes of a netCDF datatype ncview doesn't display (see the terminal for details); they'll be skipped." );
+					warned_unhandled_type = true;
+					}
+				safe_strcat( ret_string.data(), retval_len, note );
+				continue;
+				}
 			}
 
 		std::vector<char> data( size_to_use*len );
 
-		ncattget( fileid, varid, att_name, data.data() );
+		ncattget( groupid, varid, att_name, data.data() );
 
 		safe_strcat( ret_string.data(), retval_len, att_name );
 		safe_strcat( ret_string.data(), retval_len, ": "     );
@@ -1988,7 +2217,7 @@ std::string netcdf_att_string( int fileid, std::string_view var_name )
 }
 
 /*******************************************************************************************/
-std::string netcdf_global_att_string( int fileid )
+static std::string netcdf_global_att_string( int fileid )
 {
 	int	iatt, len, size_to_use, i, n_atts, err;
 	nc_type	datatype;
@@ -2011,6 +2240,10 @@ std::string netcdf_global_att_string( int fileid )
 	snprintf( ret_string.data(), retval_len-1, "\nGlobal attributes:\n--------------------------\n" );
 	ret_string[retval_len-1] = '\0';
 
+	/* Phase 12d: reported once per call, not once per unhandled attribute
+	 * -- see netcdf_att_string()'s identical guard above for the reason. */
+	bool warned_unhandled_type = false;
+
 	for( iatt=0; iatt<n_atts; iatt++ ) {
 
 		ncattname( fileid, NC_GLOBAL, iatt, att_name );
@@ -2025,8 +2258,24 @@ std::string netcdf_global_att_string( int fileid )
 			case NC_DOUBLE: size_to_use = sizeof(double); break;
 			case NC_NAT:    fprintf(stderr,"Error, cannot handle attributes of type NC_NAT; ignoring\n" ); break;
 			default:
+				{
+				/* Phase 12d: was exit(-1) -- see netcdf_att_string()'s
+				 * identical fix above for the full reasoning (a valid
+				 * netCDF-4 file with a modern-typed global attribute
+				 * crashed ncview on display). Skip just this attribute,
+				 * note it, keep going. */
+				char note[512];
+				snprintf( note, sizeof(note),
+					"(global attribute \"%s\": unhandled netCDF datatype %d, skipped)\n",
+					att_name, (int)datatype );
 				fprintf( stderr, "Error, unhandled netcdf data type: %d\n", datatype );
-				exit(-1);
+				if( ! warned_unhandled_type ) {
+					in_error( "This file has one or more global attributes of a netCDF datatype ncview doesn't display (see the terminal for details); they'll be skipped." );
+					warned_unhandled_type = true;
+					}
+				safe_strcat( ret_string.data(), retval_len, note );
+				continue;
+				}
 			}
 
 		std::vector<char> data( size_to_use*len );
@@ -2076,7 +2325,7 @@ void warn_about_char_dims()
  * this returns the dimvarid of the bounds dimvar, and sets nvertices to the number
  * of vertices the bounds var has 
  */
-int netcdf_dimvar_bounds_id( int fileid, char *dim_name, int *nvertices )
+static int netcdf_dimvar_bounds_id( int fileid, char *dim_name, int *nvertices )
 {
 	int	reg_dimvar_id, bounds_dimvar_id, dimvar_ndims, err, name_length, debug,
 		dimvar_gid;
@@ -2168,55 +2417,6 @@ char *ncview_varname( int gid, int varid )
 }
 
 /*****************************************************************************************************
- * Given a ncid (file id) which may or may not be the root id, prints the entire group structure
- * of the file. Useful for debugging
- */
-void nc_print_group_structure( int fileid )
-{
-	int 	rootid, cursor, parent;
-	int	ig, ndims, nvars, natts, unlimdimid;
-	int	ng;
-	size_t	gnl;
-
-	/* Get root */
-	cursor = fileid;
-	while( nc_inq_grp_parent( cursor, &parent ) == 0 ) {
-		cursor = parent;
-		}
-	rootid = cursor;
-
-	printf( "nc_print_group_structure: fileid=%d rootid=%d\n", fileid, rootid );
-	nc_inq_grps( rootid, &ng, NULL );	/* first call to get num groups */
-
-	if( ng == 0 ) {
-		printf("nc_print_group_structure: no groups in this file\n" );
-		return;
-		}
-
-	std::vector<int> gid( ng );
-	nc_inq_grps( rootid, &ng, gid.data() );
-	printf( "nc_print_group_structure: fileid=%d rootid=%d has %d groups:\n", fileid, rootid, ng );
-
-	for( ig=0; ig<ng; ig++ ) {
-
-		/* Get group name */
-		nc_inq_grpname_len( gid[ig], &gnl );
-		std::vector<char> group_name_buf( gnl+2 );
-		char *group_name = group_name_buf.data();
-		nc_inq_grpname_full( gid[ig], &gnl, group_name );
-
-		/* find info about this group: number of dims, vars, atts */
-		nc_inq( gid[ig], &ndims, &nvars, &natts, &unlimdimid );
-
-		printf( "   group %d: id=%d >%s<\n", 
-			ig, gid[ig], group_name );
-
-		printf( "       ndims:%d nvars:%d natts:%d unlimdimid:%d\n",
-			ndims, nvars, natts, unlimdimid );
-		}
-}
-
-/*****************************************************************************************************
  * Given a fileid, which may be a root ID or a group ID, returns the root group ID
  */
 int nc_root_id_from_group_id( int gid ) 
@@ -2237,9 +2437,13 @@ int nc_root_id_from_group_id( int gid )
 	if( err == NC_ENOGRP ) 
 		return( cursor );	/* at the root of the chain */
 
+	/* Phase 12c: was exit(0) -- a real netCDF error reported to stderr
+	 * but exiting with SUCCESS status, so a caller checking the exit
+	 * code (a script, CI) couldn't tell this ever failed. Every other
+	 * error exit in this file uses -1; matched here for consistency. */
 	fprintf( stderr, "%s line %d : nc_root_id_from_group_id failed with error %d : %s\n",
-		__FILE__, __LINE__, 
+		__FILE__, __LINE__,
 		err, nc_strerror(err) );
-	exit(0);
+	exit(-1);
 }
 

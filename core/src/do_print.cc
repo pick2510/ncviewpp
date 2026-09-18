@@ -1,7 +1,7 @@
 /*
  * Ncview by David W. Pierce.  A visual netCDF file viewer.
- * Copyright (C) 2026 Dominik Strebel
  * Copyright (C) 1993 through 2024 David W. Pierce
+ * Modifications Copyright (C) 2026 Dominik Strebel
  *
  * This program  is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 3 as
@@ -25,6 +25,7 @@
 #include <array>
 
 #include "ncview/includes.h"
+#include "ncview/dataset.h"	/* NetCDFFile -- file0->dimLongname()/etc. below */
 #include "ncview/defines.h"
 #include "ncview/protos.h"
 
@@ -46,10 +47,8 @@
 
 #define	ID_FONT_SIZE_SCALE	0.7	/* How much smaller ID font size is than regular */
 
-extern View 	*view;
+extern std::unique_ptr<ViewState> &view;
 extern Options 	options;
-
-static PrintOptions printopts;
 
 /* getlogin() is POSIX-only -- not provided by MinGW-w64's Windows CRT --
  * used only to stamp a username on the "include ID" printout footer, so a
@@ -74,6 +73,8 @@ static void build_print_info( PrintInfo *info, size_t x_size, size_t y_size );
 	void
 print_init( void )
 {
+	PrintOptions &printopts = g_app.session.printSettings();
+
 	printopts.page_x_margin 	= PAGE_X_MARGIN;
 	printopts.page_upper_y_margin 	= PAGE_UPPER_Y_MARGIN;
 	printopts.page_lower_y_margin 	= PAGE_LOWER_Y_MARGIN;
@@ -99,10 +100,29 @@ print_init( void )
 do_print( void )
 {
 	size_t	x_size, y_size, scaled_x_size, scaled_y_size;
+	PrintOptions &printopts = g_app.session.printSettings();
 
 #ifdef DEBUG
 	fprintf( stderr, "entering do_print()\n" );
 #endif
+	/* Reachable via Button::Print before any variable has been selected
+	 * (e.g. pressing Print immediately on startup) -- view->variable
+	 * and everything build_print_info() reads below is otherwise
+	 * dereferenced unconditionally. Same "no variable selected yet"
+	 * session fact Phase 2 guarded view.cc's entry points against. */
+	if( view == NULL )
+		return;
+
+	/* Phase 13b: Button::Print stays enabled while a 1-D variable is
+	 * selected, and the size[] reads just below (plus ~30 more in
+	 * build_print_info(), and the view->pixels the page is drawn from)
+	 * are out of bounds in that state. Same shape as the null-view guard
+	 * above -- a precondition on the session, not on the arguments. */
+	if( ! view->has2dImage() ) {
+		in_error( "There is no 2-D picture to print for this variable." );
+		return;
+		}
+
 	x_size = view->variable->size[view->x_axis_id];
 	y_size = view->variable->size[view->y_axis_id];
 	view_get_scaled_size( options.blowup, x_size, y_size, &scaled_x_size, &scaled_y_size );
@@ -116,7 +136,7 @@ do_print( void )
 
 	in_set_cursor_busy();
 
-	view_draw( false, false ); /* Don't allow saveframes -- force reload of image data */
+	g_app.controller.draw( false, false ); /* Don't allow saveframes -- force reload of image data */
 
 	PrintInfo info;
 	info.width  = scaled_x_size;
@@ -137,7 +157,7 @@ do_print( void )
 	static void
 build_print_info( PrintInfo *info, size_t x_size, size_t y_size )
 {
-	char 	*x_dim_name, *y_dim_name, tstr[1500], tstr2[1000], *dim_name;
+	char 	*x_dim_name, *y_dim_name, tstr[1500], tstr2[1024], *dim_name;
 	std::string units, x_dim_longname, y_dim_longname, x_units, y_units,
 		main_long_name, main_units, dim_longname, file_title;
 	FDBlist	*fdb;
@@ -145,23 +165,30 @@ build_print_info( PrintInfo *info, size_t x_size, size_t y_size )
 	int	i, type, has_bounds;
 	time_t	sec_since_1970;
 	double	temp_double, bound_min, bound_max;
+	PrintOptions &printopts = g_app.session.printSettings();
+	/* The 13 single-file fi_*() forwarders this function used to call were
+	 * collapsed onto NetCDFFile methods (Phase 6): every call site already
+	 * held the owning FDBlist and only used ->id() to hand a bare fileid
+	 * to a free function, so ->file (the NetCDFFile* FDBlist already
+	 * carries) is the direct replacement -- "move, don't split" applied to
+	 * the caller side, not just the callee. */
+	NetCDFFile *file0 = view->variable->files.front()->file;
 
 #ifdef DEBUG
 	fprintf( stderr, "build_print_info: entering\n" );
 #endif
 	x_dim_name     = const_cast<char *>(view->variable->dim[view->x_axis_id]->name.c_str());
-	x_dim_longname = fi_dim_longname( view->variable->files.front().get()->id, x_dim_name );
-	x_units        = fi_dim_units( view->variable->files.front().get()->id, x_dim_name );
+	x_dim_longname = file0->dimLongname( x_dim_name );
+	x_units        = file0->dimUnits( x_dim_name );
 
 	y_dim_name     = const_cast<char *>(view->variable->dim[view->y_axis_id]->name.c_str());
-	y_dim_longname = fi_dim_longname( view->variable->files.front().get()->id, y_dim_name );
-	y_units        = fi_dim_units( view->variable->files.front().get()->id, y_dim_name );
+	y_dim_longname = file0->dimLongname( y_dim_name );
+	y_units        = file0->dimUnits( y_dim_name );
 
-	main_long_name = fi_long_var_name( view->variable->files.front().get()->id,
-			view->variable->name );
+	main_long_name = file0->longVarName( view->variable->name );
 	if( main_long_name.empty() )
 		main_long_name = view->variable->name;
-	main_units     = fi_var_units( view->variable->files.front().get()->id, view->variable->name );
+	main_units     = file0->varUnits( view->variable->name );
 
 	/***** Main variable name and units ******/
 	if( printopts.include_title ) {
@@ -184,7 +211,7 @@ build_print_info( PrintInfo *info, size_t x_size, size_t y_size )
 	/***************** Other information *******************/
 	if( printopts.include_extra_info ) {
 		/**** File title ***/
-		file_title = fi_title( view->variable->files.front().get()->id );
+		file_title = file0->title();
 		if( !file_title.empty() )
 			info->extra_info.push_back( file_title );
 
@@ -223,9 +250,9 @@ build_print_info( PrintInfo *info, size_t x_size, size_t y_size )
 			    (i != view->y_axis_id) &&
 			    (view->variable->dim[i].get() != NULL)) {
 				dim_name     = const_cast<char *>(view->variable->dim[i]->name.c_str());
-				dim_longname = fi_dim_longname( view->variable->files.front().get()->id, dim_name );
-				units        = fi_dim_units( view->variable->files.front().get()->id, dim_name );
-				type         = fi_dim_value( view->variable, i, view->var_place[i],
+				dim_longname = file0->dimLongname( dim_name );
+				units        = file0->dimUnits( dim_name );
+				type         = g_app.session.dataset().dimValue( view->variable, i, view->var_place[i],
 							&temp_double, tstr2, &has_bounds, &bound_min, &bound_max, view->var_place.data() );
 				if( type == NC_DOUBLE )
 					snprintf( tstr, 1499, "Current %s: %lg", dim_longname.c_str(), temp_double );
@@ -244,8 +271,8 @@ build_print_info( PrintInfo *info, size_t x_size, size_t y_size )
 		std::array<size_t, 20> actual_place;
 		virt_to_actual_place( view->variable, view->var_place.data(), actual_place.data(), &fdb );
 		if( (view->scan_axis_id != -1) &&
-		    (fi_recdim_id( view->variable->files.front().get()->id ) != view->x_axis_id ) &&
-		    (fi_recdim_id( view->variable->files.front().get()->id ) != view->y_axis_id))
+		    (file0->recdimId() != view->x_axis_id ) &&
+		    (file0->recdimId() != view->y_axis_id))
 			snprintf( tstr, 1499, "Frame %ld in ",
 				(long)(actual_place[view->scan_axis_id]+1) );
 		strncat( tstr, "File ", sizeof(tstr) - strlen(tstr) - 1 );

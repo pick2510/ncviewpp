@@ -49,10 +49,10 @@ std::string run_fmt_time(NCDim &dim, double val, int include_granularity = 1) {
 
 // Builds a synthetic netCDF file with a single time-only variable, spaced
 // step_days apart, and wires it into a real NCVar via the same
-// add_var_to_list()/fill_dim_structs() path core itself uses (this is what
-// udu_calc_tgran() actually needs: a real NCDim with a populated ->units
-// string and a real file to read two sample values back from via
-// fi_dim_value() -- there's no lighter-weight way to exercise it).
+// Dataset::addVariable()/fill_dim_structs() path core itself uses (this is
+// what udu_calc_tgran() actually needs: a real NCDim with a populated
+// ->units string and a real file to read two sample values back from via
+// Dataset::dimValue() -- there's no lighter-weight way to exercise it).
 struct TgranFixture {
     std::string path;
     int fileid;
@@ -96,12 +96,16 @@ struct TgranFixture {
         stringlist_delete_entire_list(files);
         fileid = netcdf_fi_initialize(const_cast<char *>(path.c_str()));
 
-        add_var_to_list(const_cast<char *>(var_name), fileid, const_cast<char *>(path.c_str()), 1);
-        var = get_var(const_cast<char *>(var_name));
+        g_dataset.addVariable(var_name, fileid, path.c_str());
+        var = g_dataset.findVariable(var_name);
         REQUIRE(var != nullptr);
     }
     ~TgranFixture() {
-        netcdf_fi_close(fileid);
+        // Do NOT netcdf_fi_close(fileid) here: Dataset::addVariable() routes
+        // every fileid through trackFile() (OOP_redesign Step 5), which took
+        // ownership of it and will close it itself when g_dataset is
+        // destroyed -- closing it again here would double-close it (see
+        // test_varlist.cc's identical note).
         std::remove(path.c_str());
     }
 };

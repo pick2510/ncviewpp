@@ -11,10 +11,23 @@
 */
 
 #include "ncview/includes.h"
+#include "ncview/dataset.h"	/* NetCDFFile -- handle_time_dim()/months_calc_tgran() (Phase 7b) */
 #include "ncview/defines.h"
 #include "ncview/protos.h"
 
 #define JULGREG   2299161
+
+/* handle_time_dim()/months_calc_tgran()/fmt_time() (formerly util.cc, moved
+ * here Phase 4b of the "refine the architecture" plan, group 3) are the
+ * TimeStandard dispatch layer shared across this file's Epic0 functions and
+ * udu.cc's Udunits ones -- fmt_time() calls into both. Moved here rather
+ * than into udu.cc since epic_time.cc is the smaller, less central of the
+ * two calendar backends. */
+static TimeGranularity  months_calc_tgran( NetCDFFile *file, NCDim *d );
+
+/* Variables local to routines in this file */
+static  const char *month_name[12] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+	"Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
 
 void
 ep_time_to_mdyhms(long *time, int *mon, int *day, int *yr, int *hour, int *min, float *sec)
@@ -101,5 +114,116 @@ epic_fmt_time( char *temp_string, size_t temp_string_len, double new_dimval, NCD
 	snprintf( temp_string, temp_string_len, "%1d-%s-%04d %02d:%02d", day, months[mon-1],
 		yr, hour, min );
 	temp_string[ temp_string_len-1 ] = '\0';
+}
+
+/******************************************************************************/
+	void
+handle_time_dim( NetCDFFile *file, NCVar *v, int dimid )
+{
+	NCDim   *d;
+	int	fileid = file->id();
+
+	d = v->dim[dimid].get();
+
+	if( udu_utistime( const_cast<char *>(d->name.c_str()), const_cast<char *>(d->units.c_str()) ) ) {
+		d->timelike = 1;
+		d->time_std = TimeStandard::Udunits;
+		d->tgran    = udu_calc_tgran( fileid, v, dimid );
+		}
+	else if( epic_istime0( fileid, v, d )) {
+		d->timelike = 1;
+		d->time_std = TimeStandard::Epic0;
+		d->tgran    = epic_calc_tgran( fileid, d );
+		}
+	else if( (!d->units.empty()) &&
+		 (d->units.size() >= 5) &&
+		 (strncasecmp( d->units.c_str(), "month", 5 ) == 0 ))  {
+		d->timelike = 1;
+		d->time_std = TimeStandard::Months;
+		d->tgran    = months_calc_tgran( file, d );
+		}
+	else
+		d->timelike = 0;
+}
+
+/******************************************************************************/
+	static TimeGranularity
+months_calc_tgran( NetCDFFile *file, NCDim *d )
+{
+	char	temp_string[1024];
+	float	delta, v0, v1;
+	int	type, has_bounds;
+	double	temp_double, bounds_min, bounds_max;
+
+	if( d->size < 2 ) {
+		return( TimeGranularity::Day );
+		}
+
+	type = file->dimValue( const_cast<char *>(d->name.c_str()), 0L, &temp_double, temp_string, 0L, &has_bounds, &bounds_min, &bounds_max );
+	if( type == NC_DOUBLE )
+		v0 = (float)temp_double;
+	else
+		{
+		fprintf( stderr, "Note: can't calculate time granularity, unrecognized timevar type (%d)\n",
+			type );
+		return( TimeGranularity::Day );
+		}
+
+	type = file->dimValue( const_cast<char *>(d->name.c_str()), 1L, &temp_double, temp_string, 1L, &has_bounds, &bounds_min, &bounds_max );
+	if( type == NC_DOUBLE )
+		v1 = (float)temp_double;
+	else
+		{
+		fprintf( stderr, "Note: can't calculate time granularity, unrecognized timevar type (%d)\n",
+			type );
+		return( TimeGranularity::Day );
+		}
+
+	delta = v1 - v0;
+
+	if( delta > 11.5 )
+		return( TimeGranularity::Year );
+	if( delta > .95 )
+		return( TimeGranularity::Month );
+	if( delta > .03 )
+		return( TimeGranularity::Day );
+
+	return( TimeGranularity::Min );
+}
+
+/******************************************************************************/
+void fmt_time( char *temp_string, size_t temp_string_len, double new_dimval, NCDim *dim, int include_granularity )
+{
+	int 	year, month, day;
+
+	if( ! dim->timelike ) {
+		fprintf( stderr, "ncview: internal error: fmt_time called on non-timelike axis!\n");
+		fprintf( stderr, "dim name: %s\n", dim->name.c_str() );
+		exit( -1 );
+		}
+
+	if( dim->time_std == TimeStandard::Udunits )
+		udu_fmt_time( temp_string, temp_string_len, new_dimval, dim, include_granularity );
+
+	else if( dim->time_std == TimeStandard::Epic0 )
+		epic_fmt_time( temp_string, temp_string_len, new_dimval, dim );
+
+	else if( dim->time_std == TimeStandard::Months ) {
+		/* Format for months standard */
+		year  = (int)( (new_dimval-1.0) / 12.0 );
+		month = (int)( (new_dimval-1.0) - year*12 + .01 );
+		month = (month < 0) ? 0 : month;
+		month = (month > 11) ? 11 : month;
+		day   =
+		   (int)( ((new_dimval-1.0) - year*12 - month) * 30.0) + 1;
+		snprintf( temp_string, temp_string_len-1, "%s %2d %4d", month_name[month],
+				day, year+1 );
+		}
+
+	else
+		{
+		fprintf( stderr, "Internal error: uncaught value of tim_std=%d\n", static_cast<int>(dim->time_std) );
+		exit( -1 );
+		}
 }
 

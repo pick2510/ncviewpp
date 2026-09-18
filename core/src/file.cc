@@ -1,7 +1,7 @@
 /*
  * Ncview by David W. Pierce.  A visual netCDF file viewer.
- * Copyright (C) 2026 Dominik Strebel
  * Copyright (C) 1993 through 2024 David W. Pierce
+ * Modifications Copyright (C) 2026 Dominik Strebel
  *
  * This program  is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 3 as 
@@ -25,153 +25,70 @@
  *	The file interface to ncview.
  *
  *	All the routines in this file must be provided for whatever
- *	format data file you want to have.  Ideally, all the information 
+ *	format data file you want to have.  Ideally, all the information
  *    	about the data file formats should be encapsulated here.
+ *
+ *	Phase 12c: this file used to dispatch every entry point on a
+ *	`static int file_type` set by determine_file_type() -- but netCDF has
+ *	been the only format ncview has ever opened, FILE_TYPE_NETCDF
+ *	(defines.h) was the only constant of its kind, and file_type was
+ *	assigned that value in exactly one place. The dispatch was real but
+ *	permanently dead code (every `else` branch exit(-1)'d on a value
+ *	that could never occur), simplified away rather than kept as
+ *	indirection for a second backend that has never existed and isn't
+ *	planned -- see the plan file's Part V "declined" items for the
+ *	reasoning against building a real multi-backend interface instead.
  *
  *****************************************************************************/
 
 #include "ncview/includes.h"
+#include "ncview/dataset.h"	/* NetCDFFile -- fi_initialize()'s file->listVars() below */
 #include "ncview/defines.h"
 #include "ncview/protos.h"
 
-#ifdef HAVE_UDUNITS2
-#include "ncview/utCalendar2_cal.h"
-#endif
-
-static int   file_type;
 extern Options options;
-
-static void fi_get_data_iterate( NCVar *var, size_t *virt_start_pos, size_t *count, void *data );
-
-/************************************************************************************/
-/* return true if passed the name of a file which these routines were designed
- * to read, and false otherwise.
- */
-	int
-fi_confirm( char *name )
-{
-	return( netcdf_fi_confirm( name ));
-}
-
-/************************************************************************************/
-/* return true if the passed filename is writable, and false otherwise.
- * It is assumed that the file exists and is readable.
- */
-	int
-fi_writable( char *name )
-{
-	if( file_type != FILE_TYPE_NETCDF )
-		{
-		fprintf( stderr, "?unknown file_type passed to fi_writable: %d\n",
-			file_type );
-		exit( -1 );
-		}
-	return( netcdf_fi_writable( name ));
-}
 
 /************************************************************************************/
 /* Do all file opening and initialization for the passed filename.
  * Return a unique integer ID by which this file will be indicated
- * in the future.  Passed arg 'nfiles' is total number of files that
- * were indicated on the command line; this can be used to make space
- * for some arrays.
+ * in the future.
  */
 	int
-fi_initialize( char *name, int nfiles )
+fi_initialize( char *name )
 {
 	int	id;
 	Stringlist *var_list;
+	NetCDFFile *file;
 
-	if( file_type == FILE_TYPE_NETCDF ) {
-		if( options.debug ) 
-			printf( "Initializing file %s\n", name );
-		id = netcdf_fi_initialize( name );
-		}
-	else
-		{
-		fprintf( stderr, "?unknown file_type passed to fi_initialize: %d\n",
-			file_type );
-		exit( -1 );
-		}
+	if( options.debug )
+		printf( "Initializing file %s\n", name );
+	id = netcdf_fi_initialize( name );
 
-	if( options.debug ) 
+	if( options.debug )
 		printf( "Getting list of variables for file %s\n", name );
-	var_list = fi_list_vars( id );
-	add_vars_to_list( var_list, id, name, nfiles );
-	
-	if( options.debug ) 
+	/* trackFile() here (rather than leaving Dataset::addVariables() to
+	 * discover this fileid on its own) is what lets listVars() below be a
+	 * NetCDFFile method instead of the free-function fi_list_vars() this
+	 * replaced (Phase 6) -- trackFile() is idempotent by fileid, so
+	 * addVariables()'s own per-variable trackFile() calls just return the
+	 * same object. */
+	file = g_app.session.dataset().trackFile( id );
+	var_list = file->listVars();
+	g_app.session.dataset().addVariables( var_list, id, name );
+
+	if( options.debug )
 		printf( "Done initializing file %s\n", name );
 
 	return( id );
-}	
-
-/************************************************************************************/
-/* Return a list of the names of all the displayable variables in
- * the file.  Whether or not a variable is "displayable" is determined 
- * by the needs of the data, but in any event any displayable variable
- * must have at least 1 scannable dimension and be accessable by these 
- * routines. If the user wouldn't ever be interested in contouring some
- * variable, such as a dimension variable, it shouldn't appear on this list.
- */
-	Stringlist *
-fi_list_vars( int fileid )
-{
-	if( file_type != FILE_TYPE_NETCDF )
-		{
-		fprintf( stderr, "?unknown file_type passed to fi_list_vars: %d\n",
-			file_type );
-		exit( -1 );
-		}
-	return( netcdf_fi_list_vars( fileid ));
-}
-
-/************************************************************************************
- * Return the "title" of the file, if applicable.  Otherwise, return NULL.
- */
-	std::string
-fi_title( int fileid )
-{
-	if( file_type != FILE_TYPE_NETCDF )
-		{
-		fprintf( stderr, "?unknown file_type passed to fi_title: %d\n",
-			file_type );
-		exit( -1 );
-		}
-	return( netcdf_title( fileid ));
-}
-
-/************************************************************************************
- * Return the 'long name' of a variable, if appropriate.  Otherwise, return empty.
- */
-	std::string
-fi_long_var_name( int fileid, std::string_view var_name )
-{
-	if( file_type != FILE_TYPE_NETCDF )
-		{
-		fprintf( stderr, "?unknown file_type passed to fi_title: %d\n",
-			file_type );
-		exit( -1 );
-		}
-	return( netcdf_long_var_name( fileid, var_name ));
-}
-
-/************************************************************************************
- * Return the 'units' of a variable, if appropriate.  Otherwise, return empty.
- */
-	std::string
-fi_var_units( int fileid, std::string_view var_name )
-{
-	if( file_type != FILE_TYPE_NETCDF )
-		{
-		fprintf( stderr, "?unknown file_type passed to fi_var_units: %d\n",
-			file_type );
-		exit( -1 );
-		}
-	return( netcdf_var_units( fileid, var_name ));
 }
 
 /************************************************************************************
  * Return the 'calendar' attribution of a dimension, if appropriate.  Otherwise, return empty.
+ *
+ * Stayed a free function through Phase 6 of the "refine the architecture"
+ * plan (unlike its 13 sibling forwarders, now NetCDFFile methods --
+ * dataset.h/dataset.cc): this one adds real logic (the command-line
+ * override below) beyond dispatch, so it isn't a pure forwarder.
  */
 	std::string
 fi_dim_calendar( int fileid, std::string_view dim_name )
@@ -180,366 +97,20 @@ fi_dim_calendar( int fileid, std::string_view dim_name )
 	if( ! options.calendar.empty() )
 		return options.calendar;
 
-	if( file_type != FILE_TYPE_NETCDF )
-		{
-		fprintf( stderr, "?unknown file_type passed to fi_dim_calendar: %d\n",
-			file_type );
-		exit( -1 );
-		}
 	return( netcdf_dim_calendar( fileid, dim_name ));
 }
 
 /************************************************************************************
- * Return the 'units' of a dimension, if appropriate.  Otherwise, return empty.
- */
-	std::string
-fi_dim_units( int fileid, std::string_view dim_name )
-{
-	if( file_type != FILE_TYPE_NETCDF )
-		{
-		fprintf( stderr, "?unknown file_type passed to fi_dim_units: %d\n",
-			file_type );
-		exit( -1 );
-		}
-	return( netcdf_dim_units( fileid, dim_name ));
-}
-
-/************************************************************************************/
-/* Given a file id and the name of a variable, return the number of 
- * dimensions which that variable has.  This reads it directly from
- * the file, not using information in the 'variables' structure.
- */
-	int
-fi_n_dims( int id, char *var_name )
-{
-	if( file_type != FILE_TYPE_NETCDF )
-		{
-		fprintf( stderr, "?unknown file_type passed to fi_n_dims: %d\n",
-			file_type );
-		exit( -1 );
-		}
-	return( netcdf_fi_n_dims( id, var_name ));
-}
-
-/***********************************************************************************
- * Given a variable name, return a Stringlist of "scannable" dimensions for it.  The
- * definition of "scannable" dimension is rather loose; I'm using the assumption
- * that a scannable dimension must have a minimum number of points along it.
- * This is set in the routine netcdf_scannable_dims.
- */
-	Stringlist *
-fi_scannable_dims( int fileid, char *var_name )
-{
-	if( file_type != FILE_TYPE_NETCDF )
-		{
-		fprintf( stderr, "?unknown file_type passed to fi_scannable_dims: %d\n",
-			file_type );
-		exit( -1 );
-		}
-	return( netcdf_scannable_dims( fileid, var_name ));
-}
-
-/************************************************************************************
- * Given the file and the name of a variable in it, return an array
- * of the dimension sizes for that variable.  This reads the information
- * directly from the file, not from the 'variables' structure.
- */
-	size_t *
-fi_var_size( int fileid, char *var_name )
-{
-	if( file_type != FILE_TYPE_NETCDF )
-		{
-		fprintf( stderr, "?unknown file_type passed to fi_var_size: %d\n",
-			file_type );
-		exit( -1 );
-		}
-	return( netcdf_fi_var_size( fileid, var_name ));
-}
-
-/************************************************************************************
- * Given a dimension's id and the name of the variable who owns it,
- * return the name of the dimension.  'Id' here means the index into
- * the size_array of the owning variable.
- */
-	std::string
-fi_dim_id_to_name( int fileid, std::string_view var_name, int dim_id )
-{
-	if( file_type != FILE_TYPE_NETCDF )
-		{
-		fprintf( stderr, "?unknown file_type passed to fi_dim_id_to_name: %d\n",
-			file_type );
-		exit( -1 );
-		}
-	return( netcdf_dim_id_to_name( fileid, var_name, dim_id ));
-}
-
-/************************************************************************************
- * Given a dimension's name and the name of the variable who owns it,
- * return the index where that dimension appears in the size array
- * returned by 'fi_var_size'.  Return -1 if the dimension does not 
- * appear in the variable.
- */
-	int
-fi_dim_name_to_id( int fileid, char *var_name, char *dim_name )
-{
-	if( file_type != FILE_TYPE_NETCDF ) {
-		fprintf( stderr, "?unknown file_type passed to fi_var_size: %d\n",
-			file_type );
-		exit( -1 );
-		}
-	return( netcdf_dim_name_to_id( fileid, var_name, dim_name ));
-}
-
-/************************************************************************************/
-/* Fill out a pointer to the data for the passed variable from the
- * indicated file.  The data is assumed to be multi-dimensional
- * (it has to be at least 2 dimensions, else it isn't displayable!)
- * and starts at the position given by start_pos[0...N-1], with
- * counts of count[0...N-1].  The pointer MUST ALREADY point to 
- * storage large enough to hold the data!  Note that this routine
- * translates the 'start' place from a virtual location to an 
- * actual location for you, so you don't have to worry about that.
- * I.e., if you have a variable spread out over many files, you just
- * index it as if it were in one file and let the translation routine
- * take care of figuring out where it actually is.
- */
-	void
-fi_get_data( NCVar *var, size_t *virt_start_pos, size_t *count, void *data )
-{
-	FDBlist	*file;
-
-	/* Check to see if we should loop over the timelike indices
-	 */
-	if( (var->is_virtual == true) && (count[0] > 1) ) {
-		fi_get_data_iterate( var, virt_start_pos, count, data );
-		return;
-		}
-
-	std::vector<size_t> act_start_pos_buf( var->n_dims );
-	size_t *act_start_pos = act_start_pos_buf.data();
-	virt_to_actual_place( var, virt_start_pos, act_start_pos, &file );
-
-	if( file_type == FILE_TYPE_NETCDF )
-		netcdf_fi_get_data( file->id, const_cast<char *>(var->name.c_str()), act_start_pos,
-			  count, (float *)data, file->aux_data.get() );
-	else
-		{
-		fprintf( stderr, "?unknown file_type passed to fi_get_data: %d\n",
-			file_type );
-		exit( -1 );
-		}
-}
-
-/*****************************************************************************
- * This is called when a variable lives in multiple files AND we
- * want data from more than one file.  We must iterate over the files.
- */
-	void
-fi_get_data_iterate( NCVar *var, size_t *virt_start_pos, size_t *count, void *data )
-{
-	size_t	it, start2[MAX_NC_DIMS], count2[MAX_NC_DIMS], prod_lower_dims;
-	FDBlist	*file;
-	int	i;
-
-	std::vector<size_t> act_start_pos_buf( var->n_dims );
-	size_t *act_start_pos = act_start_pos_buf.data();
-
-	prod_lower_dims = 1L;
-	for( i=1; i<var->n_dims; i++ ) {
-		start2[i] = virt_start_pos[i];
-		count2[i] = count[i];
-		prod_lower_dims *= count[i];
-		}
-
-	count2[0] = 1L;
-	for( it=virt_start_pos[0]; it<(virt_start_pos[0]+count[0]); it++ ) {
-		start2[0] = it;
-		virt_to_actual_place( var, start2, act_start_pos, &file );
-		if( file_type == FILE_TYPE_NETCDF )
-			netcdf_fi_get_data( file->id, const_cast<char *>(var->name.c_str()), act_start_pos,
-				  count2, ((float *)data)+(it-virt_start_pos[0])*prod_lower_dims,
-				  	file->aux_data.get() );
-		else
-			{
-			fprintf( stderr, "?unknown file_type passed to fi_get_data: %d\n",
-				file_type );
-			exit( -1 );
-			}
-		}
-}
-
-/************************************************************************************
- * Close the relevant file 
+ * Close the relevant file
  */
 	void
 fi_close( int fileid )
 {
-	if( file_type == FILE_TYPE_NETCDF )
-		netcdf_fi_close( fileid );
-	else
-		{
-		fprintf( stderr, "?unknown file_type passed to fi_close: %d\n",
-			file_type );
-		exit( -1 );
-		}
+	netcdf_fi_close( fileid );
 }
 
 /*************************************************************************************
- * Does this dimension have a longname?  If so, return it.  Otherwise, NULL.
- */
-	std::string
-fi_dim_longname( int fileid, std::string_view dim_name )
-{
-	if( file_type != FILE_TYPE_NETCDF )
-		{
-		fprintf( stderr, "?unknown file_type passed to fi_has_dim_values: %d\n",
-			file_type );
-		exit( -1 );
-		}
-	return( netcdf_dim_longname( fileid, dim_name ) );
-}
-
-/**************************************************************************************
- * May ALTER the value of dimval if warranted!!
- */
-void fi_dim_value_convert( double *dimval, FDBlist *file, NCVar *var, NCDim *d )
-{
-#ifdef HAVE_UDUNITS2
-	double converted_dimval;
-	int	year0, month0, hour0, min0, day0, err;
-	double	sec0;
-
-	FDBlist *first_file = var->files.front().get();
-	if( (file->recdim_units.empty()) ||
-	    (first_file->recdim_units.empty()) ||
-	    (first_file->ut_unit_ptr  == NULL) ||
-	    (file->ut_unit_ptr 		   == NULL) ||
-	    (! d->timelike )                        ||
-	    (file->recdim_units == first_file->recdim_units) )
-	    	return;
-
-	/* Convert the dim value to a date using the units given
-	 * in the file that this dim value came from
-	 */
-	err = utCalendar2_cal( *dimval, file->recdim_units.c_str(),
-		&year0, &month0, &day0, &hour0, &min0, &sec0, d->calendar.c_str() );
-	if( err == 0 ) {
-		err = utInvCalendar2_cal( year0, month0, day0, hour0, min0, sec0,
-			first_file->recdim_units.c_str(), &converted_dimval,
-			d->calendar.c_str() );
-		if( err == 0 )
-			*dimval = converted_dimval;
-		}
-#endif
-}
-
-/*************************************************************************************
- * Return the value of a dimension at a specific point.  Returns the type
- * of the dimension value, which is either NC_DOUBLE or NC_CHAR.  Make sure
- * to allocate space for at least a 1024 character string in the return_value!
- * It will never be larger than that.  Takes a virtual place, and converts 
- * it to an actual place before determining the value.
- */
-	nc_type
-fi_dim_value( NCVar *var, int dim_id, size_t virt_place, double *return_val_double, 
-	char *return_val_char, int *return_has_bounds, double *return_bounds_min, 
-	double *return_bounds_max, size_t *complete_ndim_virt_place )
-{
-	size_t	actual_place;
-	FDBlist	*file;
-	int	i;
-	std::string	dim_name;
-	nc_type	ret_val;
-	NCDim	*d;
-	size_t	idx_map;
-	NCDim_map_info	*dmi;
-
-if(1==0){
-printf( "Data cache vals for var %s:\n", var->name.c_str() );
-for( i=0; i<var->n_dims; i++ ) {
-	printf( "Dim %d (%s): ", i, var->dim[i]->name.c_str() );
-	if( var->dim_map_info[i] == NULL )
-		printf( "NULL\n" );
-	else
-		printf( "(%s) %f %f %f\n",
-			var->dim_map_info[i]->coord_var_name.c_str(),
-			var->dim_map_info[i]->data_cache[0], var->dim_map_info[i]->data_cache[10],
-			var->dim_map_info[i]->data_cache[100] );
-	}
-}
-
-	/* See if this dim value is actually 2-d mapped */
-	dmi = var->dim_map_info[dim_id].get();
-	if( dmi != NULL ) {
-		/* It IS 2-d mapped, calculate entry in data cache where val is */
-		idx_map = 0L;
-		for( i=0; i<var->n_dims; i++ ) {
-			idx_map += complete_ndim_virt_place[i] * dmi->index_place_factor[i];
-/*printf( "dimidx=%d  place=%ld  factor=%ld  idx_so_far=%ld\n", i, complete_ndim_virt_place[i], dmi->index_place_factor[i], idx_map );*/
-			}
-		*return_val_double = dmi->data_cache[idx_map];
-/*printf( "mapped, dim=%s loc=%ld  val=%lf\n", var->dim[dim_id]->name, idx_map, *return_val_double );*/
-		return( NC_DOUBLE );
-		}
-
-	std::vector<size_t> act_start_pos_buf( var->n_dims );
-	size_t *act_start_pos = act_start_pos_buf.data();
-	std::vector<size_t> virt_start_pos_buf( var->n_dims );
-	size_t *virt_start_pos = virt_start_pos_buf.data();
-
-	for( i=0; i<var->n_dims; i++ )
-		*(virt_start_pos+i) = 0L;
-	*(virt_start_pos+dim_id) = virt_place;
-
-	virt_to_actual_place( var, virt_start_pos, act_start_pos, &file );
-
-	actual_place = *(act_start_pos+dim_id);
-
-	d = (var->dim[dim_id].get());
-	dim_name  = d->name;
-	if( file_type == FILE_TYPE_NETCDF )
-		ret_val = netcdf_dim_value( file->id, const_cast<char *>(dim_name.c_str()), actual_place,
-				return_val_double, return_val_char, virt_place,
-				return_has_bounds, return_bounds_min, return_bounds_max );
-	else
-		{
-		fprintf( stderr, "?unknown file_type passed to fi_dim_value: %d\n",
-			file_type );
-		exit( -1 );
-		}
-
-#ifdef HAVE_UDUNITS2
-	/* Now we have to figure out if we need to change units on the
-	 * returned value...This will happen with timelike dimensions that
-	 * have a different units string in each file.
-	 */
-	if( ret_val != NC_CHAR) {
-		fi_dim_value_convert( return_val_double, file, var, d );
-		fi_dim_value_convert( return_bounds_min, file, var, d );
-		fi_dim_value_convert( return_bounds_max, file, var, d );
-		}
-#endif
-
-	return( ret_val );
-}
-
-/*************************************************************************************
- * Does this data file have *values* for the dimensions?
- */
-	int
-fi_has_dim_values( int fileid, char *dim_name )
-{
-	if( file_type != FILE_TYPE_NETCDF )
-		{
-		fprintf( stderr, "?unknown file_type passed to fi_has_dim_values: %d\n",
-			file_type );
-		exit( -1 );
-		}
-	return( netcdf_has_dim_values( fileid, dim_name ) );
-}
-
-/*************************************************************************************
- * File utility routines; things below this line shouldn't have to be changed 
+ * File utility routines; things below this line shouldn't have to be changed
  * for different data file formats.
  */
 
@@ -557,9 +128,7 @@ determine_file_type( Stringlist *input_files )
 
 	const char *first_file = (*input_files)[0].string.c_str();
 
-	if( netcdf_fi_confirm( (char *)first_file ) )
-		file_type = FILE_TYPE_NETCDF;
-	else
+	if( ! netcdf_fi_confirm( (char *)first_file ) )
 		{
 		ierr = stat( first_file, &buf );
 		if( ierr == 0 ) {
@@ -575,46 +144,4 @@ determine_file_type( Stringlist *input_files )
 			exit( -1 );
 			}
 		}
-}
-
-/************************************************************************************
- * Fill out the data structure which holds information unique to each data file
- * format.
- */
-	void
-fi_fill_aux_data( int id, char *var_name, FDBlist *fdb )
-{
-	if( file_type == FILE_TYPE_NETCDF )
-		netcdf_fill_aux_data( id, var_name, fdb );
-	else
-		{
-		fprintf( stderr, "?unknown file_type passed to fi_has_dim_values: %d\n",
-			file_type );
-		exit( -1 );
-		}
-}
-
-/*******************************************************************************
- * If the file format we are currently using defines a "fill value" (i.e.,
- * a special data value which indicates out-of-domain or never-written data)
- * then set the value to that fill value.  Otherwise, don't change it.
- */
-	void
-fi_fill_value( NCVar *var, float *fill_value )
-{
-	if( file_type == FILE_TYPE_NETCDF )
-		netcdf_fill_value( var->files.front()->id, const_cast<char *>(var->name.c_str()),
-				fill_value, var->files.front()->aux_data.get() );
-	else
-		{
-		fprintf( stderr, "?unknown file_type passed to fi_fill_value: %d\n",
-			file_type );
-		exit( -1 );
-		}
-}
-
-	int 	
-fi_recdim_id( int fileid )
-{
-	return( netcdf_fi_recdim_id( fileid ));
 }

@@ -13,12 +13,31 @@ the short version.
   alongside the other built-in colormaps.
 
 ### Changed
+- `core/`'s previously-independent 5 global variables (`options`,
+  `variables`, `pixel_transform`, `framestore`, `view`) are now all
+  facets of one object, `ViewerSession` -- see `PORTING.md`'s
+  "OOP_redesign" section for the full nine-step migration. Also
+  introduces `Dataset`, `ViewState`, `FrameCache`, `ViewerController`,
+  and a `ViewerUi` virtual interface replacing the old free-function
+  toolkit seam. No user-visible behavior change; this is purely an
+  internal ownership/structure change, verified at every step against
+  the full test suite and the Xvfb screenshot regression harness.
 - The root-level `README`/`COPYRIGHT`/`CHANGE_LOG` files (UDUNITS-2's own,
   required at that exact path by its vendored CMake build) are no longer
   committed to the repo -- generated there at configure time instead, from
   the submodule's own copies, and `.gitignore`'d.
 
 ### Fixed
+- Two memory leaks in variable-switching, found as a side effect of the
+  `OOP_redesign` ownership work above: `set_scan_variable()`'s
+  early-return path and `invalidate_variable()` both used to
+  reassign/reset the global view pointer without deleting what it
+  previously pointed to. Now owned via `std::unique_ptr`, which frees the
+  old object automatically on both paths.
+- Opened netCDF files were never closed for the lifetime of the process
+  (`fi_close()` had zero callers anywhere in the codebase) -- fixed as
+  part of the same `OOP_redesign` work by introducing a `NetCDFFile` RAII
+  wrapper that closes on destruction.
 - Info-row label text sitting off-center in its bordered box (previously
   compensated with a manual, environment-specific pixel offset that could
   over- or under-correct depending on the platform's actual font metrics;

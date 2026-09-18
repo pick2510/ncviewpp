@@ -1,7 +1,7 @@
 /*
  * Ncview by David W. Pierce.  A visual netCDF file viewer.
- * Copyright (C) 2026 Dominik Strebel
  * Copyright (C) 1993 through 2024 David W. Pierce
+ * Modifications Copyright (C) 2026 Dominik Strebel
  *
  * This program  is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 3 as 
@@ -41,10 +41,8 @@ const char *my_overlay_names[] = { "None",
 			"USA states",
 			"custom" };
 
-extern View  	*view;
+extern std::unique_ptr<ViewState> &view;
 extern Options  options;
-
-static int	my_current_overlay;
 
 static int 	gen_xform( float value, int n, float *dimvals );
 static std::vector<int> gen_overlay_internal( View *v, float *data, long n );
@@ -63,6 +61,17 @@ do_overlay( int n, char *custom_filename, int suppress_screen_changes )
 		return;
 		}
 
+	/* Phase 13b: an overlay is a mask laid over the 2-D image, and every
+	 * gen_overlay*() below indexes dim[]/size[]/dim_map_info[] by both
+	 * display axis ids. With a 1-D variable selected there is no image to
+	 * overlay and those reads are out of bounds. OVERLAY_NONE is still
+	 * allowed through -- turning an overlay *off* touches none of that
+	 * and is how the user gets back to a clean state. */
+	if( (n != OVERLAY_NONE) && ! view->has2dAxes() ) {
+		x_error( "This variable has no 2-D picture to put an overlay on" );
+		return;
+		}
+
 	/* Free space for previous overlay */
 	if( options.overlay->doit )
 		options.overlay->overlay.clear();
@@ -73,23 +82,23 @@ do_overlay( int n, char *custom_filename, int suppress_screen_changes )
 			options.overlay->doit = false;
 			if( ! suppress_screen_changes ) {
 				view->data_status = ViewDataStatus::Invalid;
-				invalidate_all_saveframes();
-				change_view( 0, FRAMES );
+				g_app.session.invalidateAllSaveframes();
+				g_app.controller.stepView( 0, FRAMES );
 				}
 			break;
 
 		case OVERLAY_P8DEG:
-			do_overlay_inner( view, overlay_coasts_p8deg, n_overlay_coasts_p8deg,
+			do_overlay_inner( view.get(), overlay_coasts_p8deg, n_overlay_coasts_p8deg,
 					suppress_screen_changes );
 			break;
 
 		case OVERLAY_P08DEG:
-			do_overlay_inner( view, overlay_coasts_p08deg, n_overlay_coasts_p08deg,
+			do_overlay_inner( view.get(), overlay_coasts_p08deg, n_overlay_coasts_p08deg,
 					suppress_screen_changes );
 			break;
 
 		case OVERLAY_USA:
-			do_overlay_inner( view, overlay_usa, n_overlay_usa,
+			do_overlay_inner( view.get(), overlay_usa, n_overlay_usa,
 					suppress_screen_changes );
 			break;
 
@@ -98,12 +107,12 @@ do_overlay( int n, char *custom_filename, int suppress_screen_changes )
 				in_error( "Specified custom overlay filename is not a valid filename!\n" );
 				return;
 				}
-			options.overlay->overlay = gen_overlay( view, custom_filename );
+			options.overlay->overlay = gen_overlay( view.get(), custom_filename );
 			if( ! options.overlay->overlay.empty() ) {
 				options.overlay->doit = true;
 				if( ! suppress_screen_changes ) {
-					invalidate_all_saveframes();
-					change_view( 0, FRAMES );
+					g_app.session.invalidateAllSaveframes();
+					g_app.controller.stepView( 0, FRAMES );
 					}
 				}
 			break;
@@ -113,7 +122,7 @@ do_overlay( int n, char *custom_filename, int suppress_screen_changes )
 			exit(-1);
 		}
 
-	my_current_overlay = n;
+	g_app.session.currentOverlay() = n;
 }
 
 /*=========================================================================================
@@ -127,8 +136,8 @@ do_overlay_inner( View *v, float *data, long nvals, int suppress_screen_changes 
 	if( ! options.overlay->overlay.empty() ) {
 		options.overlay->doit = true;
 		if( ! suppress_screen_changes ) {
-			invalidate_all_saveframes();
-			change_view( 0, FRAMES );
+			g_app.session.invalidateAllSaveframes();
+			g_app.controller.stepView( 0, FRAMES );
 			}
 		}
 }
@@ -140,7 +149,7 @@ do_overlay_inner( View *v, float *data, long nvals, int suppress_screen_changes 
 	void
 overlay_init()
 {
-	my_current_overlay       = OVERLAY_NONE;
+	g_app.session.currentOverlay() = OVERLAY_NONE;
 	options.overlay->overlay.clear();
 	options.overlay->doit    = false;
 }
@@ -181,7 +190,7 @@ determine_overlay_base_dir( char *overlay_base_dir, size_t n )
  * NOTE: 'nvals' is the total number of data values in array data.  Since there are
  * two data values per location, nvals is TWICE the number of locations.
  */
-	void
+	static void
 gen_overlay_internal_mapped( View *v, float *data, long nvals, std::vector<int> &overlay )
 {
 	NCDim	*dim_x, *dim_y;
@@ -214,7 +223,7 @@ gen_overlay_internal_mapped( View *v, float *data, long nvals, std::vector<int> 
 		cursor_place[ v->y_axis_id ] = jj;
 
 		/* Get X value */
-		dimval_type = fi_dim_value( v->variable, v->x_axis_id, ii, &tval, cval,
+		dimval_type = g_app.session.dataset().dimValue( v->variable, v->x_axis_id, ii, &tval, cval,
 			&has_bnds, &bnds_min, &bnds_max, cursor_place );
 		if( dimval_type == NC_DOUBLE )
 			dimval_x_2d[ii + jj*x_size] = tval;
@@ -222,7 +231,7 @@ gen_overlay_internal_mapped( View *v, float *data, long nvals, std::vector<int> 
 			dimval_x_2d[ii + jj*x_size] = dim_x->values[ii];
 
 		/* Get Y value */
-		dimval_type = fi_dim_value( v->variable, v->y_axis_id, ii, &tval, cval,
+		dimval_type = g_app.session.dataset().dimValue( v->variable, v->y_axis_id, jj, &tval, cval,
 			&has_bnds, &bnds_min, &bnds_max, cursor_place );
 		if( dimval_type == NC_DOUBLE )
 			dimval_y_2d[ii + jj*x_size] = tval;
@@ -423,7 +432,7 @@ overlay_names( void )
 	int
 overlay_current( void )
 {
-	return( my_current_overlay );
+	return( g_app.session.currentOverlay() );
 }
 
 /****************************************************************************************/
@@ -453,8 +462,8 @@ overlay_custom_n( void )
  * (0,0) -----
  *
  */
-	void
-overlay_find_closest_pt_inner( size_t point_number, size_t init_guess_idxx, size_t init_guess_idxy, 
+	static void
+overlay_find_closest_pt_inner( size_t point_number, size_t init_guess_idxx, size_t init_guess_idxy,
 	float locx, float locy, float *xvals, float *yvals, size_t nx, size_t ny, size_t *idxx, size_t *idxy )
 {
 	float	dist[9], dx, dy, mindist, tdist[9] = {}, prev_d4;

@@ -26,7 +26,7 @@ The intended outcome: `core/` becomes a C++17 library that owns its memory throu
 1. **Scope**: modernize the data model, not just hygiene. `std::string` for the `char*` fields, `std::vector` for the manual arrays, `std::unique_ptr` for ownership, standard containers replacing the intrusive lists — `anyptr.h` gets deleted.
 2. **Parity is strict.** Every commit leaves `ctest` output and the Xvfb screenshots byte-identical. Upstream quirks stay, including the ones PORTING.md deliberately preserved (`view.cc:show_current_dim_values()` ignoring `dim->timelike`). Defects found along the way get logged in PORTING.md and fixed in *separate, later* commits with their own tests — never folded into a refactoring commit.
 3. **The seam may change.** `char*` → `const char*`/`std::string_view`/`std::string` across `interface.h` and `protos.h` is allowed; `ui/` (2345 lines, ~45 references to core types) is updated in the same commit.
-4. **Out of scope this pass**: the 192 `exit()` calls stay as-is, and the 5 globals stay globals. Both are the "full redesign" option, and both are observable-behavior changes that strict parity forbids. Note them in PORTING.md as the next phase.
+4. **Out of scope this pass**: the 192 `exit()` calls stay as-is, and the 5 globals stay globals. Both are the "full redesign" option, and both are observable-behavior changes that strict parity forbids. Note them in PORTING.md as the next phase. (The 5-globals decision was later revisited, once the goal was maintainability rather than parity -- see PORTING.md's "OOP_redesign" section.)
 
 ## Phase 0 — Build the safety net first (no core changes)
 

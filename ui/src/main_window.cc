@@ -7,6 +7,7 @@
 #include "ncview_ui/main_window.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -15,22 +16,21 @@
 #include <FL/Fl.H>
 #include <FL/fl_draw.H>
 #include <FL/names.h>
-#include <FL/Fl_Check_Button.H>
+#include <FL/Fl_Button.H>
 #include <FL/Fl_Choice.H>
-#include <FL/Fl_Float_Input.H>
+#include <FL/Fl_Double_Window.H>
+#include <FL/Fl_Hold_Browser.H>
 #include <FL/Fl_Hor_Slider.H>
+#include <FL/Fl_Return_Button.H>
 #include <FL/Fl_Input.H>
 #include <FL/Fl_Multi_Label.H>
-#include <FL/Fl_Native_File_Chooser.H>
-#include <FL/Fl_Return_Button.H>
-#include <FL/Fl_Round_Button.H>
 
 namespace ncview_ui {
 
 namespace {
-// Matches util.cc:data_to_pixels()'s pixel encoding: valid data occupies
-// indices [10, 10+n_colors), everything below is reserved (missing/out of
-// range). We don't have n_colors here, so just clamp to the array.
+// Matches FrameRenderer::render()'s pixel encoding (core/src/frame_renderer.cc):
+// valid data occupies indices [10, 10+n_colors), everything below is reserved
+// (missing/out of range). We don't have n_colors here, so just clamp to the array.
 inline void lookup( const unsigned char *r, const unsigned char *g, const unsigned char *b,
                      unsigned char idx, unsigned char *out )
 {
@@ -243,12 +243,12 @@ int ImageView::handle( int event )
 			if( Fl::event_button3() ) mask |= 4;
 			int bx, by;
 			screenToBuffer( Fl::event_x(), Fl::event_y(), &bx, &by );
-			view_report_position( bx, by, mask );
+			g_app.controller.reportPosition( bx, by, mask );
 			// Middle-button press/drag highlights the corresponding cell in
 			// the data-edit window, if one is open (matches upstream's
 			// Btn2Up/Btn2Motion -> do_set_dataedit_place() translation).
 			if( (event == FL_PUSH || event == FL_DRAG) && Fl::event_button2() )
-				set_dataedit_place();
+				view->setDataeditPlace();
 			return 1;
 		}
 		case FL_MOUSEWHEEL: {
@@ -267,10 +267,10 @@ int ImageView::handle( int event )
 			// than an actual click.
 			if( Fl::event_button() == FL_LEFT_MOUSE ) {
 				if( dragging_ ) dragging_ = false;
-				else if( Fl::event_state( FL_CTRL ) ) set_min_from_curdata();
-				else plot_XY();
+				else if( Fl::event_state( FL_CTRL ) ) g_app.controller.setMinFromCurdata();
+				else g_app.controller.plotXY();
 			} else if( Fl::event_button() == FL_RIGHT_MOUSE && Fl::event_state( FL_CTRL ) ) {
-				set_max_from_curdata();
+				g_app.controller.setMaxFromCurdata();
 			}
 			return 1;
 		default:
@@ -279,58 +279,6 @@ int ImageView::handle( int event )
 }
 
 /* ===================== Colorbar ===================== */
-
-namespace {
-// Direct port of upstream cbar.c's "nice round numbers" tick-level picker
-// (mynormalize/nlev_from_step/genlevs), unchanged, so the colorbar lands on
-// the same 1/2/5 x10^n step sizes and tick count upstream's does instead of
-// just labeling the two endpoints.
-void cbarNormalize( double value, double *mantissa, double *exponent )
-{
-	if( value == 0.0 ) { *mantissa = 0.0; *exponent = 0.0; return; }
-	double q = std::log10( value );
-	*exponent = (double)(int)q;
-	*mantissa = value / std::pow( 10.0, *exponent );
-	if( q < 0.0 ) { *exponent -= 1.0; *mantissa *= 10.0; }
-}
-
-void cbarNlevFromStep( double step, double mindat, double maxdat, int *nlev, double *start )
-{
-	int n0 = (int)(maxdat/step);
-	double cursor = (double)n0 * step;
-	while( cursor > mindat ) { n0--; cursor = (double)n0 * step; }
-	int n1 = (int)(mindat/step);
-	cursor = (double)n1 * step;
-	while( cursor < maxdat ) { n1++; cursor = (double)n1 * step; }
-	*nlev = n1 - n0 + 1;
-	*start = (double)n0 * step;
-}
-
-bool cbarGenlevs( double mindat, double maxdat, int nlevels, double *start, int *nlevs, double *step )
-{
-	if( nlevels < 2 || maxdat <= mindat ) return false;
-	static const int kTrial[4] = { 1, 2, 5, 10 };
-	double trialstep = (maxdat - mindat) / (double)(nlevels - 1);
-	double mant, expon;
-	cbarNormalize( trialstep, &mant, &expon );
-	double fact = std::pow( 10.0, expon );
-	for( int i = 0; i < 3; i++ ) {
-		if( mant < kTrial[i] || mant > kTrial[i+1] ) continue;
-		double step1 = kTrial[i]*fact, step2 = kTrial[i+1]*fact;
-		int n1, n2;
-		double start1, start2;
-		cbarNlevFromStep( step1, mindat, maxdat, &n1, &start1 );
-		cbarNlevFromStep( step2, mindat, maxdat, &n2, &start2 );
-		if( std::abs( n1 - nlevels ) <= std::abs( n2 - nlevels ) ) {
-			*step = step1; *nlevs = n1; *start = start1;
-		} else {
-			*step = step2; *nlevs = n2; *start = start2;
-		}
-		return true;
-	}
-	return false;
-}
-} // namespace
 
 Colorbar::Colorbar( int x, int y, int w, int h ) : Fl_Widget( x, y, w, h )
 {
@@ -353,6 +301,9 @@ void Colorbar::setRange( float user_min, float user_max, Transform transform )
 	user_max_ = user_max;
 	transform_ = transform;
 	redraw();
+	// draw() puts the tick labels just below the widget's own box, which
+	// redraw() alone doesn't repaint -- stale labels stayed on screen.
+	if( parent() ) parent()->damage( FL_DAMAGE_ALL, x(), y()+h(), w(), 18 );
 }
 
 void Colorbar::draw()
@@ -360,20 +311,16 @@ void Colorbar::draw()
 	int n_colors = options.n_colors > 0 ? options.n_colors : 200;
 	int width = w() > 0 ? w() : 1;
 	for( int px = 0; px < w(); px++ ) {
-		// Mirrors util.cc:data_to_pixels' pixel-index formula exactly
-		// (transform, then invert_colors, then scale by n_colors) --
-		// upstream's cbar.c does the same in cbar_make(). Without this the
-		// colorbar shows a plain linear gradient that no longer matches
-		// the image whenever a transform or "Invert Colormap" is active.
+		// Shares FrameRenderer::colorIndex() (core/src/frame_renderer.cc)
+		// with the actual image draw, rather than hand-copying its
+		// transform/invert/scale formula -- upstream's cbar.c does the
+		// same thing in cbar_make(). Without this the colorbar shows a
+		// plain linear gradient that no longer matches the image whenever
+		// a transform or "Invert Colormap" is active.
 		double normval = (double)px / (double)width;
-		switch( transform_ ) {
-			case Transform::Hi:     normval = normval*normval*normval*normval; break;
-			case Transform::Low:    normval = sqrt( sqrt( normval ) ); break;
-			case Transform::Center: normval = atan( (normval-0.5)*8.0 )/3.1415926536 + 0.5; break;
-			default: break;
-		}
-		if( options.invert_colors ) normval = 1.0 - normval;
-		int idx = 10 + (int)(normval * n_colors);
+		int idx = FrameRenderer::colorIndex<double>(
+			normval, transform_, options.invert_colors,
+			n_colors, options.n_extra_colors );
 		if( idx < 0 ) idx = 0;
 		if( idx > 255 ) idx = 255;
 		fl_color( fl_rgb_color( colormap_r_[idx], colormap_g_[idx], colormap_b_[idx] ) );
@@ -389,7 +336,7 @@ void Colorbar::draw()
 
 	double start, step;
 	int nlev;
-	if( !cbarGenlevs( user_min_, user_max_, nlev_target, &start, &nlev, &step ) )
+	if( !FrameRenderer::niceTickLevels( user_min_, user_max_, nlev_target, &start, &nlev, &step ) )
 		return;
 
 	fl_color( FL_BLACK );
@@ -840,6 +787,14 @@ void MainWindow::rebuildButtonBar( int available_width )
 				btn->callback( &MainWindow::buttonCallback, (void*)(intptr_t)static_cast<int>(spec.id) );
 				row->add( btn );
 				buttons_[static_cast<int>(spec.id)] = btn;
+				// Phase 13c: a new Fl_Button is active; re-apply whatever
+				// sensitivity core last asked for, or this rebuild
+				// silently re-enables buttons that were deliberately
+				// turned off (BUTTONS_2D_OFF for a variable with no 2-D
+				// picture, BUTTONS_TIMEAXIS_OFF, BUTTONS_ALL_OFF after
+				// invalidate_variable()).
+				if( button_insensitive_[static_cast<int>(spec.id)] )
+					btn->deactivate();
 			} else {
 				// "Delay:" label + a slider controlling options.frame_delay
 				// (0.0 = fastest, 1.0 = slowest -- see do_buttons.cc's
@@ -924,6 +879,184 @@ std::string escapeMenuLabel( const char *name )
 // column, so each Fl_Choice needs its own explicit width rather than
 // var_pack_->w() (which would size every dropdown to the *entire* row).
 constexpr int kVarChoiceW = 180;
+
+bool containsNoCase( const std::string &hay, const std::string &needle )
+{
+	auto it = std::search( hay.begin(), hay.end(), needle.begin(), needle.end(),
+		[]( char a, char b ) { return std::tolower( (unsigned char)a ) == std::tolower( (unsigned char)b ); } );
+	return it != hay.end();
+}
+
+// Up/Down in the filter box move the list's selection, so the picker can be
+// driven entirely from the keyboard: type, arrow, Enter.
+class PickerFilterInput : public Fl_Input {
+public:
+	PickerFilterInput( int X, int Y, int W, int H, const char *L ) : Fl_Input( X, Y, W, H, L ) {}
+	Fl_Hold_Browser *list = nullptr;
+	int handle( int e ) override
+	{
+		if( e == FL_KEYBOARD && list && list->size() > 0 ) {
+			int k = Fl::event_key();
+			if( k == FL_Up || k == FL_Down || k == FL_Page_Up || k == FL_Page_Down ) {
+				int step = ( k == FL_Page_Up || k == FL_Page_Down ) ? 15 : 1;
+				int dir = ( k == FL_Up || k == FL_Page_Up ) ? -1 : 1;
+				int v = std::clamp( list->value() + dir*step, 1, list->size() );
+				list->value( v );
+				list->make_visible( v );
+				return 1;
+			}
+		}
+		return Fl_Input::handle( e );
+	}
+};
+
+struct VarPickerEntry {
+	int item_index;            // index into the bucket combo's menu()
+	std::string name, detail;  // detail: "long_name [units]"
+};
+
+struct VarPickerState {
+	std::vector<VarPickerEntry> entries;
+	PickerFilterInput *filter = nullptr;
+	Fl_Hold_Browser *list = nullptr;
+	int chosen = -1;           // menu item index, -1 if cancelled
+};
+
+// Fl_Browser interprets '@' at the start of a column as a format code;
+// "@." turns that off for the rest of the column.
+std::string browserLine( const VarPickerEntry &e )
+{
+	return "@." + e.name + "\t@." + e.detail;
+}
+
+void refillPickerList( VarPickerState *st, const char *keep_name )
+{
+	std::string f = st->filter->value();
+	st->list->clear();
+	int select = 0;
+	for( size_t i = 0; i < st->entries.size(); i++ ) {
+		const auto &e = st->entries[i];
+		if( !f.empty() && !containsNoCase( e.name, f ) && !containsNoCase( e.detail, f ) ) continue;
+		st->list->add( browserLine( e ).c_str(), (void *)(intptr_t)i );
+		if( keep_name && e.name == keep_name ) select = st->list->size();
+	}
+	if( st->list->size() > 0 ) {
+		if( select == 0 ) select = 1;
+		st->list->value( select );
+		st->list->middleline( select );
+	}
+}
+
+void acceptPicker( VarPickerState *st )
+{
+	int line = st->list->value();
+	if( line <= 0 ) return;
+	st->chosen = st->entries[(size_t)(intptr_t)st->list->data( line )].item_index;
+	st->list->window()->hide();
+}
+
+// A variable-bucket combo that opens a filterable, scrollable picker
+// window instead of its drop-down menu. A popup menu taller than the screen
+// is unusable on FLTK's Wayland backend (GNOME/mutter dismisses it the
+// moment FLTK tries to scroll it), and a WRF file easily has 100+ vars in
+// one bucket. The menu items are still kept: they drive the combo's
+// displayed label, indicateActiveVar(), and the per-item callback.
+class VarPickerChoice : public Fl_Choice {
+public:
+	VarPickerChoice( int X, int Y, int W, int H ) : Fl_Choice( X, Y, W, H ) {}
+	int handle( int e ) override
+	{
+		if( !active_r() ) return Fl_Choice::handle( e );
+		if( e == FL_PUSH && Fl::event_button() == FL_LEFT_MOUSE ) {
+			if( Fl::visible_focus() ) Fl::focus( this );
+			openPicker();
+			return 1;
+		}
+		if( e == FL_KEYBOARD && Fl::focus() == this ) {
+			int k = Fl::event_key();
+			if( k == ' ' || k == FL_Enter || k == FL_KP_Enter || k == FL_Down ) {
+				openPicker();
+				return 1;
+			}
+		}
+		return Fl_Choice::handle( e );
+	}
+
+private:
+	void openPicker()
+	{
+		VarPickerState st;
+		const Fl_Menu_Item *items = menu();
+		for( int i = 0; items[i].text != nullptr; i++ ) {
+			const char *nm = (const char *)items[i].user_data();
+			if( nm == nullptr ) continue;
+			VarPickerEntry e{ i, nm, "" };
+			if( NCVar *v = g_app.session.dataset().findVariable( nm ); v && !v->files.empty() ) {
+				e.detail = v->files.front()->file->longVarName( nm );
+				std::string units = v->files.front()->file->varUnits( nm );
+				if( !units.empty() ) e.detail += ( e.detail.empty() ? "[" : "  [" ) + units + "]";
+			}
+			st.entries.push_back( std::move( e ) );
+		}
+		if( st.entries.empty() ) return;
+
+		const int W = 700, H = 460;
+		std::string title = std::string( "Select variable: " ) + ( items[0].text ? items[0].text : "" );
+		Fl_Double_Window win( W, H );
+		win.copy_label( title.c_str() );
+
+		PickerFilterInput filter( 60, 10, W-70, 25, "Filter:" );
+		Fl_Hold_Browser list( 10, 45, W-20, H-95 );
+		static int col_w[] = { 150, 0 };
+		list.column_widths( col_w );
+		list.column_char( '\t' );
+		Fl_Return_Button ok( W-180, H-40, 80, 30, "OK" );
+		Fl_Button cancel( W-90, H-40, 80, 30, "Cancel" );
+		win.end();
+		win.resizable( &list );
+		win.size_range( 360, 200 );
+
+		filter.list = &list;
+		st.filter = &filter;
+		st.list = &list;
+
+		filter.when( FL_WHEN_CHANGED );
+		filter.callback( []( Fl_Widget *, void *d ) {
+			auto *s = static_cast<VarPickerState*>( d );
+			int line = s->list->value();
+			const char *keep = nullptr;
+			std::string keep_s;
+			if( line > 0 ) { keep_s = s->entries[(size_t)(intptr_t)s->list->data( line )].name; keep = keep_s.c_str(); }
+			refillPickerList( s, keep );
+		}, &st );
+		list.callback( []( Fl_Widget *, void *d ) {
+			if( Fl::event_clicks() > 0 ) acceptPicker( static_cast<VarPickerState*>( d ) );
+		}, &st );
+		ok.callback( []( Fl_Widget *, void *d ) { acceptPicker( static_cast<VarPickerState*>( d ) ); }, &st );
+		cancel.callback( []( Fl_Widget *w, void * ) { w->window()->hide(); } );
+
+		const Fl_Menu_Item *cur = mvalue();
+		refillPickerList( &st, ( cur && cur->user_data() ) ? (const char *)cur->user_data() : nullptr );
+
+		// Drop down from the combo like its menu would have (X11/Windows;
+		// Wayland compositors place toplevel windows themselves).
+		int ox = 0, oy = 0;
+		for( Fl_Window *w = window(); w; w = w->window() ) { ox += w->x(); oy += w->y(); if( !w->parent() ) break; }
+		int sx, sy, sw, sh;
+		Fl::screen_work_area( sx, sy, sw, sh, window() ? window()->screen_num() : 0 );
+		int px = std::clamp( ox + x(), sx, std::max( sx, sx + sw - W ) );
+		int py = oy + y() + h();
+		if( py + H > sy + sh ) py = std::max( sy, oy + y() - H );
+		win.position( px, py );
+
+		win.set_modal();
+		win.show();
+		Fl::focus( &filter );
+		while( win.shown() ) Fl::wait();
+
+		if( st.chosen >= 0 ) picked( &menu()[st.chosen] );
+	}
+};
 } // namespace
 
 void MainWindow::populateVarList()
@@ -935,7 +1068,7 @@ void MainWindow::populateVarList()
 	// buckets upstream's x_sort_vars_by_ndims() uses for "menu" var-selection
 	// style (1d, 2d, 3d, 4d, 5-or-more), alpha-sorted within each bucket.
 	std::vector<NCVar*> buckets[5];
-	for( auto &v : variables ) {
+	for( auto &v : g_app.session.dataset().variablesMutable() ) {
 		int d = v->effective_dimensionality;
 		int idx = ( d >= 1 && d <= 4 ) ? d - 1 : 4;
 		buckets[idx].push_back( v.get() );
@@ -948,7 +1081,7 @@ void MainWindow::populateVarList()
 	for( int i = 0; i < 5; i++ ) {
 		if( buckets[i].empty() ) continue;
 
-		auto *choice = new Fl_Choice( 0, 0, kVarChoiceW, 24 );
+		auto *choice = new VarPickerChoice( 0, 0, kVarChoiceW, 24 );
 		char header[64];
 		std::snprintf( header, sizeof(header), "(%zu) %s vars", buckets[i].size(), kBucketSuffix[i] );
 		choice->add( header, 0, nullptr, nullptr, FL_MENU_INACTIVE );
@@ -980,7 +1113,7 @@ void MainWindow::rebuildColormapChoice()
 	for( size_t i = 0; i < colormaps_.size(); i++ ) {
 		std::string label = escapeMenuLabel( colormaps_[i].name.c_str() );
 		int idx = colormap_choice_->add( label.c_str(), 0, &MainWindow::colormapChoiceCallback,
-			(void *)(intptr_t)i );
+			colormap_cb_data_[i].get() );
 		if( i < colormap_previews_.size() ) {
 			auto *item = const_cast<Fl_Menu_Item *>( &colormap_choice_->menu()[idx] );
 			// Fl_Menu_Item has no native way to show an icon and text
@@ -1010,10 +1143,10 @@ void MainWindow::colormapChoiceCallback( Fl_Widget *w, void * )
 	auto *choice = static_cast<Fl_Choice*>( w );
 	const Fl_Menu_Item *item = choice->mvalue();
 	if( item == nullptr ) return;
-	size_t idx = (size_t)(intptr_t)item->user_data();
-	auto *mw = instance();
-	if( idx >= mw->colormaps_.size() ) return;
-	in_colormap_selected( mw->colormaps_[idx].name.c_str() );
+	auto *cb_data = static_cast<ColormapCbData*>( item->user_data() );
+	if( cb_data == nullptr || cb_data->window == nullptr ) return;
+	if( cb_data->index >= cb_data->window->colormaps_.size() ) return;
+	in_colormap_selected( cb_data->window->colormaps_[cb_data->index].name.c_str() );
 }
 
 void MainWindow::setLabel( Label label_id, const char *s )
@@ -1064,6 +1197,11 @@ void MainWindow::setSensitive( Button button_id, int state )
 	}
 	int idx = static_cast<int>( button_id );
 	if( idx < 0 || idx >= (int)(sizeof(buttons_)/sizeof(buttons_[0])) ) return;
+	// Remembered so rebuildButtonBar() can re-apply it: it clear()s
+	// button_bar_ and constructs new, active Fl_Buttons on every relayout,
+	// which until Phase 13c silently discarded whatever state core had
+	// last asked for.
+	button_insensitive_[idx] = ( state == 0 );
 	// A given Button id has either a toolbar button (buttons_) or a menu
 	// item (menu_items_), never both -- whichever one this id actually has
 	// gets (de)activated, the other slot is just null.
@@ -1169,9 +1307,9 @@ void MainWindow::rebuildDimRow( DimRow &row )
 	// slider) must outlive the callback; owned by the row itself
 	// (prev_cb_data/next_cb_data/slider_cb_data) and freed in
 	// clearDimButtons() when the row is torn down.
-	row.prev_cb_data = std::make_unique<std::pair<std::string,Modifier>>( row.name, Modifier::M3 );
-	row.next_cb_data = std::make_unique<std::pair<std::string,Modifier>>( row.name, Modifier::M1 );
-	row.slider_cb_data = std::make_unique<std::string>( row.name );
+	row.prev_cb_data = std::make_unique<DimStepCbData>( DimStepCbData{ row.name, Modifier::M3, &g_app.controller } );
+	row.next_cb_data = std::make_unique<DimStepCbData>( DimStepCbData{ row.name, Modifier::M1, &g_app.controller } );
+	row.slider_cb_data = std::make_unique<DimSliderCbData>( DimSliderCbData{ row.name, &g_app.controller } );
 	row.prev_btn->callback( &MainWindow::dimStepCallback, row.prev_cb_data.get() );
 	row.next_btn->callback( &MainWindow::dimStepCallback, row.next_cb_data.get() );
 	row.value_slider->callback( &MainWindow::dimSliderCallback, row.slider_cb_data.get() );
@@ -1226,15 +1364,15 @@ void MainWindow::recenterVarPack()
 
 void MainWindow::dimStepCallback( Fl_Widget *, void *data )
 {
-	auto *p = static_cast<std::pair<std::string,Modifier>*>(data);
-	view_change_cur_dim( (char *)p->first.c_str(), p->second );
+	auto *p = static_cast<DimStepCbData*>(data);
+	p->controller->changeCurDim( (char *)p->name.c_str(), p->modifier );
 }
 
 void MainWindow::dimSliderCallback( Fl_Widget *w, void *data )
 {
-	auto *name = static_cast<std::string*>(data);
+	auto *p = static_cast<DimSliderCbData*>(data);
 	auto *slider = static_cast<Fl_Slider*>(w);
-	view_set_cur_dim_index( name->c_str(), lround( slider->value() ) );
+	p->controller->setCurDimIndex( p->name.c_str(), lround( slider->value() ) );
 }
 
 void MainWindow::makeDimButtons( const Stringlist *dim_list )
@@ -1276,7 +1414,7 @@ void MainWindow::fillDimInfo( const NCDim *d, int /*please_flip*/ )
 			// called every time the place actually changes.
 			size_t size = d->size > 0 ? d->size : 1;
 			row.value_slider->bounds( 0, (double)(size-1) );
-			row.value_slider->value( (double)view_get_cur_dim_index( d->name.c_str() ) );
+			row.value_slider->value( (double)g_app.session.curDimIndex( d->name.c_str() ) );
 			break;
 		}
 	}
@@ -1290,7 +1428,7 @@ void MainWindow::setCurDimValue( const char *name, const char *value )
 	for( auto &row : dim_rows_ ) {
 		if( row.name == name ) {
 			static_cast<DimValueSlider*>( row.value_slider )->setDisplayText( value );
-			row.value_slider->value( (double)view_get_cur_dim_index( name ) );
+			row.value_slider->value( (double)g_app.session.curDimIndex( name ) );
 			return;
 		}
 	}
@@ -1308,6 +1446,25 @@ void MainWindow::draw2DField( const unsigned char *data, size_t width, size_t he
 	image_->setData( data, width, height );
 }
 
+void MainWindow::setImageVisible( bool visible )
+{
+	if( image_ == nullptr )
+		return;
+	if( visible == (image_->visible() != 0) )
+		return;
+
+	// hide() also stops FLTK routing events to the widget, which is the
+	// half that matters: ImageView::handle() feeds clicks straight into
+	// ViewerController::plotXY()/setMin/MaxFromCurdata() and middle-drag
+	// into View::setDataeditPlace(), none of which a variable without a
+	// 2-D field can answer. The window redraw is what actually clears the
+	// stale picture from the screen -- a hidden child does not repaint the
+	// area it used to occupy on its own.
+	if( visible ) image_->show();
+	else          image_->hide();
+	if( win_ ) win_->redraw();
+}
+
 void MainWindow::createColormap( const char *name, const unsigned char *r, const unsigned char *g, const unsigned char *b )
 {
 	NamedColormap cm;
@@ -1317,6 +1474,8 @@ void MainWindow::createColormap( const char *name, const unsigned char *r, const
 	std::memcpy( cm.b, b, 256 );
 	colormaps_.push_back( cm );
 	colormap_previews_.push_back( buildColormapPreview( r, g, b ) );
+	colormap_cb_data_.push_back( std::make_unique<ColormapCbData>(
+		ColormapCbData{ colormaps_.size() - 1, this } ) );
 	if( current_colormap_ < 0 ) {
 		current_colormap_ = 0;
 		image_->setColormap( r, g, b );
@@ -1397,11 +1556,10 @@ void MainWindow::drawColorbar()
 
 int MainWindow::set2DSize( size_t width, size_t height )
 {
-	static size_t last_w = 0, last_h = 0;
-	if( width == last_w && height == last_h ) return 0;
-	int retval = (width > last_w) ? 1 : -1;
-	last_w = width;
-	last_h = height;
+	if( width == last_2d_width_ && height == last_2d_height_ ) return 0;
+	int retval = (width > last_2d_width_) ? 1 : -1;
+	last_2d_width_ = width;
+	last_2d_height_ = height;
 	return retval;
 }
 
@@ -1434,292 +1592,6 @@ void MainWindow::pixelToRgb( ncv_pixel pix, int *r, int *g, int *b ) const
 void MainWindow::queryPointerPosition( int *x, int *y ) const
 {
 	image_->screenToBuffer( Fl::event_x(), Fl::event_y(), x, y );
-}
-
-/* ===================== M4 dialogs ===================== */
-/* Small modal dialogs, run with their own Fl::wait() loop (the standard
- * FLTK pattern for a blocking modal window: show(), set_modal(), spin until
- * it's hidden by a button callback). Replaces upstream's Xt dialog/range.c
- * /set_options.c-family widgets one dialog at a time; see PORTING.md. */
-
-namespace {
-struct ModalResult { bool ok = false; };
-
-void modalOkCallback( Fl_Widget *w, void *data )
-{
-	static_cast<ModalResult*>(data)->ok = true;
-	w->window()->hide();
-}
-
-void modalCancelCallback( Fl_Widget *w, void * )
-{
-	w->window()->hide();
-}
-} // namespace
-
-void MainWindow::setOptionsDialog()
-{
-	// Upstream's set_options.c also has a "select which colormaps are
-	// enabled for cycling" section, backed by interface/colormap_funcs.c
-	// (X11 colorcell allocation, deliberately not ported -- see PORTING.md's
-	// M6 notes); everything else there is reproduced here.
-	const int kOverlayY = 135;
-	int n_overlays = overlay_n_overlays();
-	int overlay_bottom = kOverlayY + 20 + n_overlays * 24;
-
-	Fl_Window win( 340, overlay_bottom + 80, "Options" );
-	Fl_Check_Button autoscale( 10, 10, 300, 25, "Autoscale each frame" );
-	autoscale.value( options.autoscale );
-	Fl_Check_Button extra_info( 10, 40, 300, 25, "Show extra info" );
-	extra_info.value( options.want_extra_info );
-	Fl_Check_Button save_frames( 10, 70, 300, 25, "Save frames in memory" );
-	save_frames.value( options.save_frames );
-	Fl_Check_Button auto_overlay( 10, 100, 300, 25, "Automatic coastline overlay" );
-	auto_overlay.value( options.auto_overlay );
-
-	Fl_Box overlay_label( 10, kOverlayY, 300, 20, "Overlay:" );
-	overlay_label.align( FL_ALIGN_LEFT | FL_ALIGN_INSIDE );
-	overlay_label.labelfont( FL_HELVETICA_BOLD );
-
-	const char **names = overlay_names();
-	int current_overlay = overlay_current();
-	int custom_idx = overlay_custom_n();
-	std::vector<Fl_Round_Button *> overlay_btns;
-	int y = kOverlayY + 20;
-	for( int i = 0; i < n_overlays; i++ ) {
-		auto *btn = new Fl_Round_Button( 10, y, 300, 22, names[i] );
-		btn->type( FL_RADIO_BUTTON );
-		if( i == current_overlay ) btn->setonly();
-		overlay_btns.push_back( btn );
-		y += 24;
-	}
-
-	// Upstream's equivalent (set_options.c's static overlay_filename) is
-	// also a value that survives across dialog invocations, not reset
-	// each time the dialog opens.
-	static std::string custom_overlay_filename;
-	Fl_Box filename_box( 10, y, 230, 25 );
-	filename_box.box( FL_DOWN_BOX );
-	filename_box.align( FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_CLIP );
-	filename_box.copy_label( custom_overlay_filename.empty() ?
-		"(no custom overlay file selected)" : custom_overlay_filename.c_str() );
-	Fl_Button browse_btn( 250, y, 80, 25, "Browse..." );
-	browse_btn.callback( []( Fl_Widget *, void *data ) {
-		auto *label_box = static_cast<Fl_Box *>( data );
-		Fl_Native_File_Chooser fc;
-		fc.title( "Select custom overlay file" );
-		char base_dir[1024];
-		determine_overlay_base_dir( base_dir, sizeof(base_dir) );
-		fc.directory( base_dir );
-		if( fc.show() == 0 && fc.filename() != nullptr ) {
-			custom_overlay_filename = fc.filename();
-			label_box->copy_label( custom_overlay_filename.c_str() );
-		}
-	}, &filename_box );
-	y += 35;
-
-	ModalResult result;
-	Fl_Return_Button ok( 100, y, 70, 30, "OK" );
-	ok.callback( modalOkCallback, &result );
-	Fl_Button cancel( 190, y, 70, 30, "Cancel" );
-	cancel.callback( modalCancelCallback, nullptr );
-
-	win.end();
-	win.set_modal();
-	win.show();
-	while( win.shown() ) Fl::wait();
-
-	if( result.ok ) {
-		options.autoscale = autoscale.value();
-		options.want_extra_info = extra_info.value();
-		options.save_frames = save_frames.value();
-		options.auto_overlay = auto_overlay.value();
-
-		int new_overlay = current_overlay;
-		for( int i = 0; i < n_overlays; i++ )
-			if( overlay_btns[i]->value() ) { new_overlay = i; break; }
-		// Re-apply if unchanged but "custom": matches upstream's own
-		// set_options.c condition, letting a freshly Browse()'d filename
-		// take effect even if "Custom" was already selected.
-		if( new_overlay != current_overlay || new_overlay == custom_idx )
-			do_overlay( new_overlay,
-				new_overlay == custom_idx && !custom_overlay_filename.empty() ?
-					(char *)custom_overlay_filename.c_str() : nullptr,
-				false );
-
-		view_draw( true, false );
-	}
-}
-
-Message MainWindow::rangeDialog( float old_min, float old_max, float global_min, float global_max,
-		float *new_min, float *new_max, int *allvars )
-{
-	Fl_Window win( 320, 190, "Set Range" );
-	char buf[64];
-
-	Fl_Box global_box( 10, 10, 300, 20 );
-	snprintf( buf, sizeof(buf), "Global range: %g to %g", global_min, global_max );
-	global_box.copy_label( buf );
-
-	Fl_Box min_label( 10, 40, 60, 25, "Min:" );
-	Fl_Float_Input min_input( 80, 40, 220, 25 );
-	snprintf( buf, sizeof(buf), "%g", old_min );
-	min_input.value( buf );
-
-	Fl_Box max_label( 10, 70, 60, 25, "Max:" );
-	Fl_Float_Input max_input( 80, 70, 220, 25 );
-	snprintf( buf, sizeof(buf), "%g", old_max );
-	max_input.value( buf );
-
-	Fl_Check_Button all_vars_cb( 10, 100, 300, 25, "Apply to all variables" );
-	all_vars_cb.value( 0 );
-
-	(void)min_label; (void)max_label;
-
-	ModalResult result;
-	Fl_Return_Button ok( 90, 145, 70, 30, "OK" );
-	ok.callback( modalOkCallback, &result );
-	Fl_Button cancel( 170, 145, 70, 30, "Cancel" );
-	cancel.callback( modalCancelCallback, nullptr );
-
-	win.end();
-	win.set_modal();
-	win.show();
-	while( win.shown() ) Fl::wait();
-
-	if( !result.ok ) return Message::Cancel;
-
-	*new_min = (float)atof( min_input.value() );
-	*new_max = (float)atof( max_input.value() );
-	if( allvars ) *allvars = all_vars_cb.value();
-	return Message::OK;
-}
-
-int MainWindow::scanDimsDialog( const Stringlist *dim_list, const char *x_axis_name, const char *y_axis_name,
-		Stringlist **new_dim_list )
-{
-	std::vector<std::string> names;
-	if( dim_list != nullptr )
-		for( auto &e : *dim_list )
-			names.push_back( e.string );
-	if( names.empty() ) return 0;
-
-	Fl_Window win( 320, 150, "Set Scan Dimensions" );
-	Fl_Box x_label( 10, 15, 60, 25, "X axis:" );
-	Fl_Choice x_choice( 90, 15, 210, 25 );
-	Fl_Box y_label( 10, 50, 60, 25, "Y axis:" );
-	Fl_Choice y_choice( 90, 50, 210, 25 );
-	(void)x_label; (void)y_label;
-
-	int x_default = 0, y_default = 0;
-	for( size_t i = 0; i < names.size(); i++ ) {
-		x_choice.add( names[i].c_str() );
-		y_choice.add( names[i].c_str() );
-		if( x_axis_name && names[i] == x_axis_name ) x_default = (int)i;
-		if( y_axis_name && names[i] == y_axis_name ) y_default = (int)i;
-	}
-	x_choice.value( x_default );
-	y_choice.value( names.size() > 1 ? (int)((y_default == x_default) ? (x_default+1)%names.size() : y_default) : 0 );
-
-	ModalResult result;
-	Fl_Return_Button ok( 90, 105, 70, 30, "OK" );
-	ok.callback( modalOkCallback, &result );
-	Fl_Button cancel( 170, 105, 70, 30, "Cancel" );
-	cancel.callback( modalCancelCallback, nullptr );
-
-	win.end();
-	win.set_modal();
-	win.show();
-	while( win.shown() ) Fl::wait();
-
-	if( !result.ok || new_dim_list == nullptr ) return 0;
-
-	// Build the returned list Y-axis first, then X-axis (matching upstream's
-	// in_set_scan_dims contract: "first the name of the Y dimension, then
-	// the name of the X dimension").
-	*new_dim_list = nullptr;
-	stringlist_add_string( new_dim_list, names[y_choice.value()].c_str() );
-	stringlist_add_string( new_dim_list, names[x_choice.value()].c_str() );
-	return 1;
-}
-
-Message MainWindow::printerOptionsDialog( PrintOptions *po )
-{
-	// Where the output goes (printer vs file, which printer, paper,
-	// orientation, copies) is the native print dialog's job now -- see
-	// in_print(). This dialog only covers what that dialog can't:
-	// page-layout settings for the ncview-drawn content of the page.
-	static const char *kFontNames[] = { "Helvetica", "Courier", "Times" };
-
-	Fl_Window win( 420, 235, "Print Layout" );
-	char buf[64];
-
-	Fl_Box margin_label( 10, 10, 90, 25, "Margins (in):" );
-	Fl_Box xmar_label( 100, 10, 20, 25, "X" );
-	Fl_Float_Input xmar_input( 120, 10, 50, 25 );
-	snprintf( buf, sizeof(buf), "%g", po->page_x_margin ); xmar_input.value( buf );
-	Fl_Box ytmar_label( 180, 10, 60, 25, "Y top" );
-	Fl_Float_Input ytmar_input( 240, 10, 50, 25 );
-	snprintf( buf, sizeof(buf), "%g", po->page_upper_y_margin ); ytmar_input.value( buf );
-	Fl_Box ybmar_label( 300, 10, 60, 25, "Y bot" );
-	Fl_Float_Input ybmar_input( 360, 10, 50, 25 );
-	snprintf( buf, sizeof(buf), "%g", po->page_lower_y_margin ); ybmar_input.value( buf );
-
-	Fl_Box font_label( 10, 45, 90, 25, "Font:" );
-	Fl_Choice font_name_choice( 100, 45, 120, 25 );
-	int font_index = 0;
-	for( size_t i = 0; i < sizeof(kFontNames)/sizeof(kFontNames[0]); i++ ) {
-		font_name_choice.add( kFontNames[i] );
-		if( po->font_name == kFontNames[i] ) font_index = (int)i;
-	}
-	font_name_choice.value( font_index );
-	Fl_Box fontsize_label( 230, 45, 40, 25, "Size" );
-	Fl_Float_Input fontsize_input( 270, 45, 40, 25 );
-	snprintf( buf, sizeof(buf), "%d", po->font_size ); fontsize_input.value( buf );
-	Fl_Box headsize_label( 315, 45, 45, 25, "Head" );
-	Fl_Float_Input headsize_input( 360, 45, 40, 25 );
-	snprintf( buf, sizeof(buf), "%d", po->header_font_size ); headsize_input.value( buf );
-
-	Fl_Check_Button include_title( 10, 80, 190, 25, "Title" );
-	include_title.value( po->include_title );
-	Fl_Check_Button include_axis( 10, 105, 190, 25, "Axis labels" );
-	include_axis.value( po->include_axis_labels );
-	Fl_Check_Button include_extra( 10, 130, 190, 25, "Extra info" );
-	include_extra.value( po->include_extra_info );
-	Fl_Check_Button include_outline( 210, 80, 190, 25, "Outline" );
-	include_outline.value( po->include_outline );
-	Fl_Check_Button include_id( 210, 105, 190, 25, "ID" );
-	include_id.value( po->include_id );
-	Fl_Check_Button test_only( 210, 130, 190, 25, "No image (test only)" );
-	test_only.value( po->test_only );
-
-	ModalResult result;
-	Fl_Return_Button ok( 190, 185, 70, 30, "OK" );
-	ok.callback( modalOkCallback, &result );
-	Fl_Button cancel( 270, 185, 70, 30, "Cancel" );
-	cancel.callback( modalCancelCallback, nullptr );
-
-	win.end();
-	win.set_modal();
-	win.show();
-	while( win.shown() ) Fl::wait();
-
-	if( !result.ok ) return Message::Cancel;
-
-	po->page_x_margin = (float)atof( xmar_input.value() );
-	po->page_upper_y_margin = (float)atof( ytmar_input.value() );
-	po->page_lower_y_margin = (float)atof( ybmar_input.value() );
-	po->font_name = kFontNames[font_name_choice.value()];
-	po->font_size = atoi( fontsize_input.value() );
-	po->header_font_size = atoi( headsize_input.value() );
-	po->include_title = include_title.value();
-	po->include_axis_labels = include_axis.value();
-	po->include_extra_info = include_extra.value();
-	po->include_outline = include_outline.value();
-	po->include_id = include_id.value();
-	po->test_only = test_only.value();
-
-	return Message::OK;
 }
 
 } // namespace ncview_ui

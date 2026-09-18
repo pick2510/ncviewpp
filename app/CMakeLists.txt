@@ -1,21 +1,20 @@
 add_executable(ncview
     main.cc
 )
-# ncview_ui and ncview_core call into each other (core calls the in_*
-# contract ncview_ui implements; ncview_ui calls core functions like
-# view_report_position directly) -- a genuine circular static-lib
-# dependency, so a plain link line only resolves it left-to-right once.
-# GNU ld/LLD's -Wl,--start-group/--end-group would make the linker keep
-# re-scanning both archives until nothing new gets pulled in, but Apple's
-# ld64 doesn't understand that syntax at all ("unknown options:
-# --whole-archive --no-whole-archive" -- ld64 has no direct equivalent).
-# Simply listing both archives twice is the old, universally-portable
-# trick for a two-library cycle: every linker (GNU ld, LLD, ld64,
-# MSVC link.exe) rescans a static archive each time it's named on the
-# link line, so by the second pass anything either side still needed
-# from the other has already been seen once and gets resolved.
+# Phase 12c: this used to list both archives twice, justified by a comment
+# claiming "core calls the in_* contract ncview_ui implements" -- a genuine
+# circular static-lib dependency once, before viewer_ui_bridge.cc existed,
+# but not since: core reaches the UI only through the abstract ViewerUi
+# virtual interface (core/include/ncview/viewer_ui.h) at runtime, which
+# creates no undefined symbol and therefore no link-time edge back into
+# ncview_ui. Confirmed at the symbol level (nm on the built archives shows
+# zero symbols ncview_core needs that ncview_ui provides, 37 the other way)
+# and by construction: ncview_core_linkcheck already links every object
+# file in ncview_core against nothing but a headless stub, which could not
+# succeed if a real cycle existed. The dependency is one-directional --
+# ncview_ui depends on ncview_core -- so a single ordering is sufficient.
 target_link_libraries(ncview PRIVATE
-    ncview_ui ncview_core ncview_ui ncview_core
+    ncview_ui ncview_core
     ncview_warning_flags ncview_sanitize_flags
 )
 
